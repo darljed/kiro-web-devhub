@@ -1,5 +1,5 @@
 import type { Metadata } from "next";
-import { snippets } from "@/lib/data";
+import { getAllSnippets } from "@/lib/snippets";
 import { SnippetSearch } from "@/components/SnippetSearch";
 
 export const metadata: Metadata = {
@@ -7,6 +7,8 @@ export const metadata: Metadata = {
 };
 
 export default function SnippetsPage() {
+  const snippets = getAllSnippets();
+
   return (
     <section className="mx-auto max-w-5xl px-4 py-12 sm:px-6 sm:py-16">
       <h1 className="text-3xl font-bold tracking-tight text-zinc-900 dark:text-zinc-100 sm:text-4xl">

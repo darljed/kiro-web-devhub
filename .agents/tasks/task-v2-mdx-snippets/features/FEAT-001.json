@@ -1,0 +1,38 @@
+{
+  "id": "FEAT-001",
+  "type": "chore",
+  "description": "Set up MDX infrastructure with Shiki syntax highlighting. Install @next/mdx, @mdx-js/loader, @mdx-js/react, @types/mdx, shiki, rehype-pretty-code (Shiki-based rehype plugin), and gray-matter (for frontmatter parsing). Configure next.config.ts with createMDX and rehype-pretty-code plugin. Create mdx-components.tsx at project root. Create lib/snippets.ts utility to read MDX files from content/snippets/ directory, parse frontmatter with gray-matter, and return typed snippet metadata. Update the Snippet interface to include tags, createdAt, updatedAt fields. Create content/snippets/ directory. Convert the existing 4 snippets from lib/data.ts into MDX files with frontmatter and multi-tab code blocks. Update app/snippets/[id]/page.tsx to dynamically import and render MDX content with Shiki-highlighted code blocks. Update app/snippets/page.tsx and components/SnippetSearch.tsx to use the new data source and support tag-based filtering. Keep the existing search by title/category and extend it to also match tags.",
+  "status": "in_progress",
+  "steps": [
+    "Install dependencies: npm install @next/mdx @mdx-js/loader @mdx-js/react @types/mdx shiki rehype-pretty-code gray-matter",
+    "Update next.config.ts: convert to next.config.mjs (required for ESM createMDX import). Import createMDX from @next/mdx, configure pageExtensions to include mdx, add rehype-pretty-code as rehypePlugin with a Shiki theme (e.g. one-dark-pro for dark, github-light for light - use css-variables theme for dark mode compatibility). Wrap nextConfig with withMDX.",
+    "Create mdx-components.tsx at project root following the pattern from node_modules/next/dist/docs/01-app/02-guides/mdx.md. Define custom components: pre (to wrap with styling classes for the code container), code (to pass through Shiki-highlighted HTML).",
+    "Create lib/snippets.ts: define SnippetMeta interface (id, title, description, category, language, tags: string[], createdAt, updatedAt). Export getAllSnippets() that uses fs.readdirSync on content/snippets/, reads each .mdx file, parses frontmatter with gray-matter, returns SnippetMeta[]. Export getSnippetById(id) that returns metadata for a single snippet. Export getSnippetSlugs() for generateStaticParams.",
+    "Create content/snippets/ directory with 4 initial MDX files converted from lib/data.ts: splunk-error-aggregation.mdx, react-use-debounce.mdx, python-batch-summarizer.mdx, bash-log-rotator.mdx. Each MDX file has YAML frontmatter (title, description, category, language, tags, createdAt, updatedAt) and content with the code block using triple-backtick with language annotation (for Shiki highlighting). Add a brief explanation section and usage notes as markdown prose around the code.",
+    "Update app/snippets/[id]/page.tsx: import getAllSnippets/getSnippetById from lib/snippets. Use generateStaticParams with getSnippetSlugs(). Use dynamic import (await import(`@/content/snippets/${id}.mdx`)) to get the MDX component. Render the MDX component wrapped in a prose container with dark mode support. Keep CopyButton but extract code text from the MDX frontmatter or a dedicated code export in each MDX file.",
+    "Create a CodeBlock component (components/CodeBlock.tsx) that wraps pre/code with the existing styling (rounded container, language label header, CopyButton). The MDX components in mdx-components.tsx should map pre to this component. Include a multi-tab variant (components/CodeTabs.tsx) - a client component with tab state that shows different code panels (e.g., 'Code', 'Test', 'Usage'). Use this in MDX files via explicit import.",
+    "Update components/SnippetSearch.tsx: update the Snippet type import to SnippetMeta from lib/snippets. Add tags display (pill badges) on each snippet card. Extend the filter logic to also match against snippet.tags array. Add a tag filter bar above the grid showing all unique tags as clickable filter pills.",
+    "Update app/snippets/page.tsx: import getAllSnippets from lib/snippets instead of from lib/data. Pass the snippets to SnippetSearch.",
+    "Add a 'Copy as AI Prompt' button (components/CopyAsPrompt.tsx) - a client component similar to CopyButton that formats the snippet as: 'Use this pattern in my code: [code]. Follow these conventions: [description]. Language: [language].' Place it alongside the existing CopyButton on the snippet detail page.",
+    "Remove the old lib/data.ts file (no longer needed once all imports are updated).",
+    "Run npm run build to verify all pages generate statically with MDX content and Shiki highlighting."
+  ],
+  "acceptance_criteria": [
+    "npm run build succeeds with all snippet pages listed as SSG routes",
+    "npm run lint passes with no errors",
+    "Each of the 4 initial MDX snippets renders with syntax-highlighted code blocks (Shiki classes in output HTML)",
+    "Snippet search page shows tags as pill badges on cards",
+    "Search filters match against title, category, AND tags",
+    "Tag filter pills appear above the snippet grid and are clickable",
+    "CopyButton still works on snippet detail pages",
+    "Copy as AI Prompt button formats the snippet correctly and copies to clipboard",
+    "Dark mode and light mode work correctly with syntax highlighting",
+    "CodeTabs component renders multi-tab code blocks when used in MDX"
+  ],
+  "verification": [
+    "npm run build - confirm all snippet routes are statically generated",
+    "npm run lint - confirm no lint errors"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

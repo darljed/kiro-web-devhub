@@ -1,0 +1,7 @@
+{
+  "task_id": "task-v2-mdx-snippets",
+  "task_description": "Replace lib/data.ts with MDX-based snippet system. Add Shiki syntax highlighting, multi-tab code blocks, tag filtering, copy-as-AI-prompt button, OG image generation, and expand snippet library to 12+ production-quality entries across Splunk, React/Next.js, Python, and Bash/DevOps categories.",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001", "FEAT-002"],
+  "blocked_reason": null
+}

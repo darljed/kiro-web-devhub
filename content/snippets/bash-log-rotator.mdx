@@ -1,0 +1,92 @@
+---
+title: "Log File Rotator"
+description: "A Bash script that rotates log files older than 7 days by compressing and archiving them to a backup directory."
+category: "Bash"
+language: "bash"
+tags: ["bash", "devops", "logging", "automation", "production-ready"]
+createdAt: "2024-11-25"
+updatedAt: "2024-12-12"
+---
+
+export const codeBlocks = {
+  main: `#!/usr/bin/env bash
+set -euo pipefail
+
+LOG_DIR="/var/log/app"
+ARCHIVE_DIR="/var/log/app/archive"
+RETENTION_DAYS=7
+
+mkdir -p "$ARCHIVE_DIR"
+
+find "$LOG_DIR" -maxdepth 1 -name "*.log" -mtime +$RETENTION_DAYS -print0 |
+  while IFS= read -r -d '' file; do
+    filename=$(basename "$file")
+    gzip -c "$file" > "$ARCHIVE_DIR/\${filename}.$(date +%Y%m%d).gz"
+    rm "$file"
+    echo "Archived: $filename"
+  done
+
+echo "Log rotation complete."`,
+  usage: `# Add to crontab for daily execution at 2 AM:
+# crontab -e
+# 0 2 * * * /opt/scripts/log-rotator.sh >> /var/log/rotation.log 2>&1
+
+# Or run manually:
+chmod +x log-rotator.sh
+./log-rotator.sh
+
+# Verify archives:
+ls -la /var/log/app/archive/
+# output: app.log.20241201.gz  error.log.20241201.gz`,
+};
+
+## Overview
+
+A production-ready Bash script for automated log rotation. It finds log files older than a configurable retention period, compresses them with gzip, moves them to an archive directory, and removes the originals. Designed to be run via cron for daily maintenance.
+
+## Code
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+LOG_DIR="/var/log/app"
+ARCHIVE_DIR="/var/log/app/archive"
+RETENTION_DAYS=7
+
+mkdir -p "$ARCHIVE_DIR"
+
+find "$LOG_DIR" -maxdepth 1 -name "*.log" -mtime +$RETENTION_DAYS -print0 |
+  while IFS= read -r -d '' file; do
+    filename=$(basename "$file")
+    gzip -c "$file" > "$ARCHIVE_DIR/${filename}.$(date +%Y%m%d).gz"
+    rm "$file"
+    echo "Archived: $filename"
+  done
+
+echo "Log rotation complete."
+```
+
+## Usage
+
+```bash
+# Add to crontab for daily execution at 2 AM:
+# crontab -e
+# 0 2 * * * /opt/scripts/log-rotator.sh >> /var/log/rotation.log 2>&1
+
+# Or run manually:
+chmod +x log-rotator.sh
+./log-rotator.sh
+
+# Verify archives:
+ls -la /var/log/app/archive/
+# output: app.log.20241201.gz  error.log.20241201.gz
+```
+
+## Notes
+
+- `set -euo pipefail` ensures the script exits on any error or undefined variable
+- `-print0` with `read -d ''` handles filenames with spaces or special characters safely
+- Modify `RETENTION_DAYS` to adjust the rotation threshold
+- Consider adding a cleanup step to remove archives older than 30-90 days
+- For high-availability systems, use `logrotate` as a more robust alternative
