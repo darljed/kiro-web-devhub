@@ -1,0 +1,290 @@
+---
+title: "Recursive Org Chart Query"
+description: "PostgreSQL recursive CTE that traverses hierarchical data (org charts, category trees, threaded comments) with depth limiting and cycle detection."
+category: "SQL"
+language: "sql"
+tags: ["sql", "postgresql", "recursive-cte", "hierarchical-data", "production-ready"]
+createdAt: "2024-12-15"
+updatedAt: "2025-01-12"
+---
+
+export const codeBlocks = {
+  main: `-- Recursive CTE for hierarchical org chart traversal
+-- with depth limiting, cycle detection, and path tracking
+
+-- Table setup
+CREATE TABLE employees (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    title VARCHAR(100) NOT NULL,
+    manager_id INTEGER REFERENCES employees(id),
+    department VARCHAR(50),
+    hire_date DATE NOT NULL DEFAULT CURRENT_DATE
+);
+
+CREATE INDEX idx_employees_manager ON employees(manager_id);
+
+-- Recursive query: Get full org tree from a given root
+WITH RECURSIVE org_tree AS (
+    -- Base case: start from the root (CEO or specified manager)
+    SELECT
+        e.id,
+        e.name,
+        e.title,
+        e.manager_id,
+        e.department,
+        0 AS depth,
+        ARRAY[e.id] AS path,
+        e.name::TEXT AS full_path,
+        false AS is_cycle
+    FROM employees e
+    WHERE e.manager_id IS NULL  -- Start from top-level (no manager)
+
+    UNION ALL
+
+    -- Recursive case: find all direct reports
+    SELECT
+        e.id,
+        e.name,
+        e.title,
+        e.manager_id,
+        e.department,
+        ot.depth + 1,
+        ot.path || e.id,
+        ot.full_path || ' > ' || e.name,
+        e.id = ANY(ot.path) AS is_cycle
+    FROM employees e
+    INNER JOIN org_tree ot ON e.manager_id = ot.id
+    WHERE NOT e.id = ANY(ot.path)  -- Cycle detection
+      AND ot.depth < 10            -- Depth limit (prevent runaway)
+)
+SELECT
+    id,
+    name,
+    title,
+    department,
+    depth,
+    full_path,
+    REPEAT('  ', depth) || name AS indented_name
+FROM org_tree
+WHERE NOT is_cycle
+ORDER BY path;
+
+-- Count of direct and indirect reports per manager
+WITH RECURSIVE subordinates AS (
+    SELECT id, name, manager_id, id AS root_manager_id
+    FROM employees
+    WHERE id IN (SELECT DISTINCT manager_id FROM employees WHERE manager_id IS NOT NULL)
+
+    UNION ALL
+
+    SELECT e.id, e.name, e.manager_id, s.root_manager_id
+    FROM employees e
+    INNER JOIN subordinates s ON e.manager_id = s.id
+    WHERE e.id != s.root_manager_id  -- Prevent cycles
+)
+SELECT
+    m.id,
+    m.name,
+    m.title,
+    COUNT(DISTINCT s.id) - 1 AS total_reports,  -- Subtract self
+    COUNT(DISTINCT CASE WHEN e.manager_id = m.id THEN e.id END) AS direct_reports
+FROM employees m
+LEFT JOIN subordinates s ON s.root_manager_id = m.id
+LEFT JOIN employees e ON e.manager_id = m.id
+WHERE m.id IN (SELECT DISTINCT manager_id FROM employees WHERE manager_id IS NOT NULL)
+GROUP BY m.id, m.name, m.title
+ORDER BY total_reports DESC;
+
+-- Find the management chain from any employee to the CEO
+WITH RECURSIVE chain AS (
+    SELECT id, name, title, manager_id, 0 AS level
+    FROM employees
+    WHERE id = :employee_id  -- Parameter: target employee
+
+    UNION ALL
+
+    SELECT e.id, e.name, e.title, e.manager_id, c.level + 1
+    FROM employees e
+    INNER JOIN chain c ON e.id = c.manager_id
+    WHERE c.level < 20  -- Safety limit
+)
+SELECT name, title, level
+FROM chain
+ORDER BY level DESC;  -- CEO first, employee last`,
+  usage: `-- Insert sample data for testing
+INSERT INTO employees (id, name, title, manager_id, department) VALUES
+    (1, 'Alice Chen', 'CEO', NULL, 'Executive'),
+    (2, 'Bob Smith', 'VP Engineering', 1, 'Engineering'),
+    (3, 'Carol Davis', 'VP Sales', 1, 'Sales'),
+    (4, 'Dave Wilson', 'Senior Engineer', 2, 'Engineering'),
+    (5, 'Eve Johnson', 'Engineer', 4, 'Engineering'),
+    (6, 'Frank Brown', 'Engineer', 4, 'Engineering'),
+    (7, 'Grace Lee', 'Sales Manager', 3, 'Sales'),
+    (8, 'Henry Park', 'Sales Rep', 7, 'Sales');
+
+-- Query: Find all people under Bob Smith (VP Engineering)
+WITH RECURSIVE team AS (
+    SELECT id, name, title, 0 AS depth
+    FROM employees WHERE id = 2
+
+    UNION ALL
+
+    SELECT e.id, e.name, e.title, t.depth + 1
+    FROM employees e
+    INNER JOIN team t ON e.manager_id = t.id
+    WHERE t.depth < 10
+)
+SELECT * FROM team WHERE depth > 0 ORDER BY depth, name;
+
+-- Result:
+-- id | name         | title           | depth
+-- 4  | Dave Wilson   | Senior Engineer | 1
+-- 5  | Eve Johnson   | Engineer        | 2
+-- 6  | Frank Brown   | Engineer        | 2`,
+};
+
+## Overview
+
+Recursive Common Table Expressions (CTEs) in PostgreSQL enable traversal of hierarchical data stored in self-referencing tables. This pattern is essential for org charts, category trees, threaded comments, bill-of-materials, and file system structures. The implementation includes critical safety features like cycle detection and depth limiting.
+
+Key design decisions:
+- **Path array tracking** enables both cycle detection and breadcrumb display
+- **Depth limiting** prevents stack overflow on deeply nested or corrupted data
+- **Cycle detection** via `ANY(path)` check safely handles circular references
+- **Index on manager_id** is critical for performance as each recursive step performs a join
+- **Separate queries** for different use cases (full tree, subtree, upward chain) cover common needs
+
+## Code
+
+```sql
+-- Recursive CTE for hierarchical org chart traversal
+-- with depth limiting, cycle detection, and path tracking
+
+CREATE TABLE employees (
+    id SERIAL PRIMARY KEY,
+    name VARCHAR(100) NOT NULL,
+    title VARCHAR(100) NOT NULL,
+    manager_id INTEGER REFERENCES employees(id),
+    department VARCHAR(50),
+    hire_date DATE NOT NULL DEFAULT CURRENT_DATE
+);
+
+CREATE INDEX idx_employees_manager ON employees(manager_id);
+
+-- Recursive query: Get full org tree from a given root
+WITH RECURSIVE org_tree AS (
+    SELECT
+        e.id,
+        e.name,
+        e.title,
+        e.manager_id,
+        e.department,
+        0 AS depth,
+        ARRAY[e.id] AS path,
+        e.name::TEXT AS full_path,
+        false AS is_cycle
+    FROM employees e
+    WHERE e.manager_id IS NULL
+
+    UNION ALL
+
+    SELECT
+        e.id,
+        e.name,
+        e.title,
+        e.manager_id,
+        e.department,
+        ot.depth + 1,
+        ot.path || e.id,
+        ot.full_path || ' > ' || e.name,
+        e.id = ANY(ot.path) AS is_cycle
+    FROM employees e
+    INNER JOIN org_tree ot ON e.manager_id = ot.id
+    WHERE NOT e.id = ANY(ot.path)
+      AND ot.depth < 10
+)
+SELECT
+    id, name, title, department, depth, full_path,
+    REPEAT('  ', depth) || name AS indented_name
+FROM org_tree
+WHERE NOT is_cycle
+ORDER BY path;
+
+-- Count direct and indirect reports per manager
+WITH RECURSIVE subordinates AS (
+    SELECT id, name, manager_id, id AS root_manager_id
+    FROM employees
+    WHERE id IN (SELECT DISTINCT manager_id FROM employees WHERE manager_id IS NOT NULL)
+
+    UNION ALL
+
+    SELECT e.id, e.name, e.manager_id, s.root_manager_id
+    FROM employees e
+    INNER JOIN subordinates s ON e.manager_id = s.id
+    WHERE e.id != s.root_manager_id
+)
+SELECT
+    m.id, m.name, m.title,
+    COUNT(DISTINCT s.id) - 1 AS total_reports,
+    COUNT(DISTINCT CASE WHEN e.manager_id = m.id THEN e.id END) AS direct_reports
+FROM employees m
+LEFT JOIN subordinates s ON s.root_manager_id = m.id
+LEFT JOIN employees e ON e.manager_id = m.id
+WHERE m.id IN (SELECT DISTINCT manager_id FROM employees WHERE manager_id IS NOT NULL)
+GROUP BY m.id, m.name, m.title
+ORDER BY total_reports DESC;
+
+-- Find management chain from employee to CEO
+WITH RECURSIVE chain AS (
+    SELECT id, name, title, manager_id, 0 AS level
+    FROM employees
+    WHERE id = :employee_id
+
+    UNION ALL
+
+    SELECT e.id, e.name, e.title, e.manager_id, c.level + 1
+    FROM employees e
+    INNER JOIN chain c ON e.id = c.manager_id
+    WHERE c.level < 20
+)
+SELECT name, title, level
+FROM chain
+ORDER BY level DESC;
+```
+
+## Usage
+
+```sql
+INSERT INTO employees (id, name, title, manager_id, department) VALUES
+    (1, 'Alice Chen', 'CEO', NULL, 'Executive'),
+    (2, 'Bob Smith', 'VP Engineering', 1, 'Engineering'),
+    (3, 'Carol Davis', 'VP Sales', 1, 'Sales'),
+    (4, 'Dave Wilson', 'Senior Engineer', 2, 'Engineering'),
+    (5, 'Eve Johnson', 'Engineer', 4, 'Engineering'),
+    (6, 'Frank Brown', 'Engineer', 4, 'Engineering'),
+    (7, 'Grace Lee', 'Sales Manager', 3, 'Sales'),
+    (8, 'Henry Park', 'Sales Rep', 7, 'Sales');
+
+-- Find all people under Bob Smith
+WITH RECURSIVE team AS (
+    SELECT id, name, title, 0 AS depth
+    FROM employees WHERE id = 2
+    UNION ALL
+    SELECT e.id, e.name, e.title, t.depth + 1
+    FROM employees e
+    INNER JOIN team t ON e.manager_id = t.id
+    WHERE t.depth < 10
+)
+SELECT * FROM team WHERE depth > 0 ORDER BY depth, name;
+```
+
+## Notes
+
+- Always include a depth limit in recursive CTEs to prevent infinite loops on corrupted data
+- The `ARRAY[e.id]` path tracking has O(n) space per row; for very deep trees, consider `ltree` extension
+- PostgreSQL 14+ supports `CYCLE` clause natively: `CYCLE id SET is_cycle USING path`
+- For large org charts (10,000+ employees), consider materialized path or nested set models for read-heavy workloads
+- Use `UNION ALL` (not `UNION`) in recursive CTEs for performance; deduplication happens via cycle detection
+- Add `WHERE depth > 0` to exclude the root node from results when listing subordinates
+- The `:employee_id` syntax uses parameterized queries to prevent SQL injection

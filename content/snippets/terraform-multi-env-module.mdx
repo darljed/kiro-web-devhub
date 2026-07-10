@@ -1,0 +1,422 @@
+---
+title: "Multi-Environment Module Pattern"
+description: "Reusable Terraform module with environment-specific variable files, remote state configuration, and workspace isolation."
+category: "Terraform"
+language: "hcl"
+tags: ["terraform", "infrastructure-as-code", "modules", "multi-environment", "production-ready"]
+createdAt: "2024-11-18"
+updatedAt: "2025-01-02"
+---
+
+export const codeBlocks = {
+  main: `# modules/vpc/main.tf - Reusable VPC module
+terraform {
+  required_version = ">= 1.5.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+variable "environment" {
+  description = "Environment name (dev, staging, production)"
+  type        = string
+  validation {
+    condition     = contains(["dev", "staging", "production"], var.environment)
+    error_message = "Environment must be dev, staging, or production."
+  }
+}
+
+variable "project_name" {
+  description = "Project name used for resource naming"
+  type        = string
+}
+
+variable "vpc_cidr" {
+  description = "CIDR block for the VPC"
+  type        = string
+}
+
+variable "availability_zones" {
+  description = "List of availability zones"
+  type        = list(string)
+}
+
+variable "enable_nat_gateway" {
+  description = "Whether to create NAT gateways"
+  type        = bool
+  default     = true
+}
+
+variable "single_nat_gateway" {
+  description = "Use a single NAT gateway (cost savings for non-prod)"
+  type        = bool
+  default     = false
+}
+
+variable "tags" {
+  description = "Additional tags for all resources"
+  type        = map(string)
+  default     = {}
+}
+
+locals {
+  name_prefix = "\${var.project_name}-\${var.environment}"
+  common_tags = merge(var.tags, {
+    Environment = var.environment
+    Project     = var.project_name
+    ManagedBy   = "terraform"
+  })
+
+  # Calculate subnet CIDRs from VPC CIDR
+  subnet_count    = length(var.availability_zones)
+  public_subnets  = [for i in range(local.subnet_count) : cidrsubnet(var.vpc_cidr, 8, i)]
+  private_subnets = [for i in range(local.subnet_count) : cidrsubnet(var.vpc_cidr, 8, i + local.subnet_count)]
+}
+
+resource "aws_vpc" "main" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = merge(local.common_tags, {
+    Name = "\${local.name_prefix}-vpc"
+  })
+}
+
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+  tags   = merge(local.common_tags, { Name = "\${local.name_prefix}-igw" })
+}
+
+resource "aws_subnet" "public" {
+  count                   = local.subnet_count
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = local.public_subnets[count.index]
+  availability_zone       = var.availability_zones[count.index]
+  map_public_ip_on_launch = true
+
+  tags = merge(local.common_tags, {
+    Name = "\${local.name_prefix}-public-\${count.index + 1}"
+    Tier = "public"
+  })
+}
+
+resource "aws_subnet" "private" {
+  count             = local.subnet_count
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = local.private_subnets[count.index]
+  availability_zone = var.availability_zones[count.index]
+
+  tags = merge(local.common_tags, {
+    Name = "\${local.name_prefix}-private-\${count.index + 1}"
+    Tier = "private"
+  })
+}
+
+resource "aws_eip" "nat" {
+  count  = var.enable_nat_gateway ? (var.single_nat_gateway ? 1 : local.subnet_count) : 0
+  domain = "vpc"
+  tags   = merge(local.common_tags, { Name = "\${local.name_prefix}-nat-eip-\${count.index + 1}" })
+}
+
+resource "aws_nat_gateway" "main" {
+  count         = var.enable_nat_gateway ? (var.single_nat_gateway ? 1 : local.subnet_count) : 0
+  allocation_id = aws_eip.nat[count.index].id
+  subnet_id     = aws_subnet.public[count.index].id
+  tags          = merge(local.common_tags, { Name = "\${local.name_prefix}-nat-\${count.index + 1}" })
+
+  depends_on = [aws_internet_gateway.main]
+}
+
+output "vpc_id" {
+  description = "The VPC ID"
+  value       = aws_vpc.main.id
+}
+
+output "public_subnet_ids" {
+  description = "List of public subnet IDs"
+  value       = aws_subnet.public[*].id
+}
+
+output "private_subnet_ids" {
+  description = "List of private subnet IDs"
+  value       = aws_subnet.private[*].id
+}`,
+  usage: `# environments/production/main.tf - Production environment root
+terraform {
+  required_version = ">= 1.5.0"
+
+  backend "s3" {
+    bucket         = "mycompany-terraform-state"
+    key            = "production/vpc/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "terraform-locks"
+    encrypt        = true
+  }
+}
+
+provider "aws" {
+  region = "us-east-1"
+  default_tags {
+    tags = {
+      Environment = "production"
+      Team        = "platform"
+    }
+  }
+}
+
+module "vpc" {
+  source = "../../modules/vpc"
+
+  environment        = "production"
+  project_name       = "myapp"
+  vpc_cidr           = "10.0.0.0/16"
+  availability_zones = ["us-east-1a", "us-east-1b", "us-east-1c"]
+  enable_nat_gateway = true
+  single_nat_gateway = false  # HA NAT for production
+
+  tags = {
+    CostCenter = "engineering"
+    Compliance = "soc2"
+  }
+}
+
+# environments/dev/main.tf - Dev environment (cost-optimized)
+module "vpc" {
+  source = "../../modules/vpc"
+
+  environment        = "dev"
+  project_name       = "myapp"
+  vpc_cidr           = "10.1.0.0/16"
+  availability_zones = ["us-east-1a", "us-east-1b"]
+  enable_nat_gateway = true
+  single_nat_gateway = true  # Single NAT to save costs
+
+  tags = {
+    CostCenter = "engineering"
+  }
+}`,
+};
+
+## Overview
+
+A Terraform module pattern for managing infrastructure across multiple environments (dev, staging, production) while maintaining DRY principles and preventing state conflicts. This approach uses separate environment directories with shared modules, enabling teams to deploy independently to different environments.
+
+Key design decisions:
+- **Input validation** prevents invalid environment names from causing misconfigurations
+- **Dynamic subnet calculation** from the VPC CIDR avoids manual IP math
+- **Cost optimization** via `single_nat_gateway` flag for non-production environments
+- **Remote state isolation** with per-environment S3 keys and DynamoDB locking
+- **Consistent tagging** through `common_tags` local and provider-level `default_tags`
+
+## Code
+
+```hcl
+# modules/vpc/main.tf - Reusable VPC module
+terraform {
+  required_version = ">= 1.5.0"
+  required_providers {
+    aws = {
+      source  = "hashicorp/aws"
+      version = "~> 5.0"
+    }
+  }
+}
+
+variable "environment" {
+  description = "Environment name (dev, staging, production)"
+  type        = string
+  validation {
+    condition     = contains(["dev", "staging", "production"], var.environment)
+    error_message = "Environment must be dev, staging, or production."
+  }
+}
+
+variable "project_name" {
+  description = "Project name used for resource naming"
+  type        = string
+}
+
+variable "vpc_cidr" {
+  description = "CIDR block for the VPC"
+  type        = string
+}
+
+variable "availability_zones" {
+  description = "List of availability zones"
+  type        = list(string)
+}
+
+variable "enable_nat_gateway" {
+  description = "Whether to create NAT gateways"
+  type        = bool
+  default     = true
+}
+
+variable "single_nat_gateway" {
+  description = "Use a single NAT gateway (cost savings for non-prod)"
+  type        = bool
+  default     = false
+}
+
+variable "tags" {
+  description = "Additional tags for all resources"
+  type        = map(string)
+  default     = {}
+}
+
+locals {
+  name_prefix = "${var.project_name}-${var.environment}"
+  common_tags = merge(var.tags, {
+    Environment = var.environment
+    Project     = var.project_name
+    ManagedBy   = "terraform"
+  })
+
+  subnet_count    = length(var.availability_zones)
+  public_subnets  = [for i in range(local.subnet_count) : cidrsubnet(var.vpc_cidr, 8, i)]
+  private_subnets = [for i in range(local.subnet_count) : cidrsubnet(var.vpc_cidr, 8, i + local.subnet_count)]
+}
+
+resource "aws_vpc" "main" {
+  cidr_block           = var.vpc_cidr
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = merge(local.common_tags, {
+    Name = "${local.name_prefix}-vpc"
+  })
+}
+
+resource "aws_internet_gateway" "main" {
+  vpc_id = aws_vpc.main.id
+  tags   = merge(local.common_tags, { Name = "${local.name_prefix}-igw" })
+}
+
+resource "aws_subnet" "public" {
+  count                   = local.subnet_count
+  vpc_id                  = aws_vpc.main.id
+  cidr_block              = local.public_subnets[count.index]
+  availability_zone       = var.availability_zones[count.index]
+  map_public_ip_on_launch = true
+
+  tags = merge(local.common_tags, {
+    Name = "${local.name_prefix}-public-${count.index + 1}"
+    Tier = "public"
+  })
+}
+
+resource "aws_subnet" "private" {
+  count             = local.subnet_count
+  vpc_id            = aws_vpc.main.id
+  cidr_block        = local.private_subnets[count.index]
+  availability_zone = var.availability_zones[count.index]
+
+  tags = merge(local.common_tags, {
+    Name = "${local.name_prefix}-private-${count.index + 1}"
+    Tier = "private"
+  })
+}
+
+resource "aws_eip" "nat" {
+  count  = var.enable_nat_gateway ? (var.single_nat_gateway ? 1 : local.subnet_count) : 0
+  domain = "vpc"
+  tags   = merge(local.common_tags, { Name = "${local.name_prefix}-nat-eip-${count.index + 1}" })
+}
+
+resource "aws_nat_gateway" "main" {
+  count         = var.enable_nat_gateway ? (var.single_nat_gateway ? 1 : local.subnet_count) : 0
+  allocation_id = aws_eip.nat[count.index].id
+  subnet_id     = aws_subnet.public[count.index].id
+  tags          = merge(local.common_tags, { Name = "${local.name_prefix}-nat-${count.index + 1}" })
+
+  depends_on = [aws_internet_gateway.main]
+}
+
+output "vpc_id" {
+  description = "The VPC ID"
+  value       = aws_vpc.main.id
+}
+
+output "public_subnet_ids" {
+  description = "List of public subnet IDs"
+  value       = aws_subnet.public[*].id
+}
+
+output "private_subnet_ids" {
+  description = "List of private subnet IDs"
+  value       = aws_subnet.private[*].id
+}
+```
+
+## Usage
+
+```hcl
+# environments/production/main.tf - Production environment root
+terraform {
+  required_version = ">= 1.5.0"
+
+  backend "s3" {
+    bucket         = "mycompany-terraform-state"
+    key            = "production/vpc/terraform.tfstate"
+    region         = "us-east-1"
+    dynamodb_table = "terraform-locks"
+    encrypt        = true
+  }
+}
+
+provider "aws" {
+  region = "us-east-1"
+  default_tags {
+    tags = {
+      Environment = "production"
+      Team        = "platform"
+    }
+  }
+}
+
+module "vpc" {
+  source = "../../modules/vpc"
+
+  environment        = "production"
+  project_name       = "myapp"
+  vpc_cidr           = "10.0.0.0/16"
+  availability_zones = ["us-east-1a", "us-east-1b", "us-east-1c"]
+  enable_nat_gateway = true
+  single_nat_gateway = false  # HA NAT for production
+
+  tags = {
+    CostCenter = "engineering"
+    Compliance = "soc2"
+  }
+}
+
+# environments/dev/main.tf - Dev environment (cost-optimized)
+module "vpc" {
+  source = "../../modules/vpc"
+
+  environment        = "dev"
+  project_name       = "myapp"
+  vpc_cidr           = "10.1.0.0/16"
+  availability_zones = ["us-east-1a", "us-east-1b"]
+  enable_nat_gateway = true
+  single_nat_gateway = true  # Single NAT to save costs
+
+  tags = {
+    CostCenter = "engineering"
+  }
+}
+```
+
+## Notes
+
+- Use `terraform workspace` only if your team agrees on the workflow; separate directories are often clearer
+- Always use DynamoDB locking to prevent concurrent state modifications
+- Pin provider versions in modules to avoid breaking changes on `terraform init`
+- Consider using `terragrunt` for additional DRY patterns across environments
+- Add `lifecycle { prevent_destroy = true }` to critical resources like VPCs in production
+- Use `terraform plan -var-file=env.tfvars` as an alternative to separate directories for simpler setups
+- Enable S3 bucket versioning on the state bucket for recovery from corrupted state

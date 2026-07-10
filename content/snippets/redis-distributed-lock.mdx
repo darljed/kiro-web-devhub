@@ -1,0 +1,404 @@
+---
+title: "Distributed Lock with Redlock"
+description: "Implementation of the Redlock algorithm for distributed mutual exclusion across multiple Redis instances with automatic TTL expiry and retry logic."
+category: "Redis"
+language: "typescript"
+tags: ["redis", "distributed-systems", "locking", "typescript", "production-ready"]
+createdAt: "2024-12-08"
+updatedAt: "2025-01-11"
+---
+
+export const codeBlocks = {
+  main: `import { createClient, RedisClientType } from 'redis';
+import crypto from 'crypto';
+
+interface LockOptions {
+  ttl: number;          // Lock TTL in milliseconds
+  retryCount: number;   // Number of acquire attempts
+  retryDelay: number;   // Delay between retries in ms
+  driftFactor: number;  // Clock drift factor (0.01 = 1%)
+}
+
+interface Lock {
+  resource: string;
+  value: string;
+  ttl: number;
+  expiration: number;
+}
+
+const DEFAULT_OPTIONS: LockOptions = {
+  ttl: 10000,
+  retryCount: 3,
+  retryDelay: 200,
+  driftFactor: 0.01,
+};
+
+export class RedlockManager {
+  private clients: RedisClientType[];
+  private options: LockOptions;
+  private quorum: number;
+
+  constructor(clients: RedisClientType[], options: Partial<LockOptions> = {}) {
+    if (clients.length < 3) {
+      throw new Error('Redlock requires at least 3 Redis instances');
+    }
+    this.clients = clients;
+    this.options = { ...DEFAULT_OPTIONS, ...options };
+    this.quorum = Math.floor(clients.length / 2) + 1;
+  }
+
+  async acquire(resource: string): Promise<Lock | null> {
+    const value = crypto.randomUUID();
+
+    for (let attempt = 0; attempt < this.options.retryCount; attempt++) {
+      const startTime = Date.now();
+      let locksAcquired = 0;
+
+      // Try to acquire lock on all instances
+      const results = await Promise.allSettled(
+        this.clients.map((client) => this.lockInstance(client, resource, value))
+      );
+
+      locksAcquired = results.filter(
+        (r) => r.status === 'fulfilled' && r.value === true
+      ).length;
+
+      // Calculate remaining TTL accounting for time elapsed and clock drift
+      const elapsed = Date.now() - startTime;
+      const drift = Math.round(this.options.ttl * this.options.driftFactor) + 2;
+      const remainingTTL = this.options.ttl - elapsed - drift;
+
+      // Check if we achieved quorum and have valid TTL remaining
+      if (locksAcquired >= this.quorum && remainingTTL > 0) {
+        return {
+          resource,
+          value,
+          ttl: remainingTTL,
+          expiration: Date.now() + remainingTTL,
+        };
+      }
+
+      // Failed to acquire - release any locks we did get
+      await this.releaseAll(resource, value);
+
+      // Wait before retrying with jitter
+      const delay = this.options.retryDelay + Math.random() * this.options.retryDelay;
+      await this.sleep(delay);
+    }
+
+    return null; // Failed to acquire after all retries
+  }
+
+  async release(lock: Lock): Promise<boolean> {
+    return this.releaseAll(lock.resource, lock.value);
+  }
+
+  async extend(lock: Lock, ttl?: number): Promise<Lock | null> {
+    const extendTTL = ttl || this.options.ttl;
+    const startTime = Date.now();
+    let extended = 0;
+
+    const script = \`
+      if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("pexpire", KEYS[1], ARGV[2])
+      else
+        return 0
+      end
+    \`;
+
+    const results = await Promise.allSettled(
+      this.clients.map((client) =>
+        client.eval(script, {
+          keys: [lock.resource],
+          arguments: [lock.value, extendTTL.toString()],
+        })
+      )
+    );
+
+    extended = results.filter(
+      (r) => r.status === 'fulfilled' && r.value === 1
+    ).length;
+
+    const elapsed = Date.now() - startTime;
+    const drift = Math.round(extendTTL * this.options.driftFactor) + 2;
+    const remainingTTL = extendTTL - elapsed - drift;
+
+    if (extended >= this.quorum && remainingTTL > 0) {
+      return { ...lock, ttl: remainingTTL, expiration: Date.now() + remainingTTL };
+    }
+
+    return null;
+  }
+
+  private async lockInstance(
+    client: RedisClientType,
+    resource: string,
+    value: string
+  ): Promise<boolean> {
+    try {
+      const result = await client.set(resource, value, {
+        NX: true,
+        PX: this.options.ttl,
+      });
+      return result === 'OK';
+    } catch {
+      return false;
+    }
+  }
+
+  private async releaseAll(resource: string, value: string): Promise<boolean> {
+    const script = \`
+      if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("del", KEYS[1])
+      else
+        return 0
+      end
+    \`;
+
+    const results = await Promise.allSettled(
+      this.clients.map((client) =>
+        client.eval(script, { keys: [resource], arguments: [value] })
+      )
+    );
+
+    const released = results.filter(
+      (r) => r.status === 'fulfilled' && r.value === 1
+    ).length;
+
+    return released >= this.quorum;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+}
+
+// Helper: Execute work within a lock with automatic release
+export async function withLock<T>(
+  manager: RedlockManager,
+  resource: string,
+  fn: (lock: Lock) => Promise<T>
+): Promise<T> {
+  const lock = await manager.acquire(resource);
+  if (!lock) {
+    throw new Error(\`Failed to acquire lock on: \${resource}\`);
+  }
+
+  try {
+    return await fn(lock);
+  } finally {
+    await manager.release(lock);
+  }
+}`,
+  usage: `import { createClient } from 'redis';
+import { RedlockManager, withLock } from './redlock';
+
+async function main() {
+  // Connect to multiple Redis instances
+  const clients = await Promise.all([
+    createClient({ url: 'redis://redis-1:6379' }).connect(),
+    createClient({ url: 'redis://redis-2:6379' }).connect(),
+    createClient({ url: 'redis://redis-3:6379' }).connect(),
+  ]);
+
+  const redlock = new RedlockManager(clients, {
+    ttl: 5000,       // 5 second lock
+    retryCount: 5,   // Try 5 times
+    retryDelay: 100, // 100ms between retries
+  });
+
+  // Option 1: Manual lock management
+  const lock = await redlock.acquire('resource:order-123');
+  if (lock) {
+    try {
+      await processOrder('order-123');
+    } finally {
+      await redlock.release(lock);
+    }
+  }
+
+  // Option 2: Using the withLock helper (recommended)
+  const result = await withLock(redlock, 'resource:payment-456', async (lock) => {
+    // Lock is automatically released when this function completes
+    return await processPayment('payment-456');
+  });
+}`,
+};
+
+## Overview
+
+An implementation of the Redlock distributed locking algorithm as described by Redis creator Salvatore Sanfilippo. This provides mutual exclusion across multiple processes or servers, ensuring that only one client can hold a lock at a time even in the presence of network partitions or individual Redis instance failures.
+
+Key design decisions:
+- **Quorum-based** locking across N instances (requires majority agreement) for fault tolerance
+- **Clock drift compensation** accounts for imprecise system clocks across machines
+- **Atomic release via Lua script** prevents releasing a lock held by another client
+- **Automatic TTL expiry** ensures locks are released even if the holder crashes
+- **Retry with jitter** prevents thundering herd on contention
+- **Lock extension** allows long-running tasks to safely extend their hold
+
+## Code
+
+```typescript
+import { createClient, RedisClientType } from 'redis';
+import crypto from 'crypto';
+
+interface LockOptions {
+  ttl: number;          // Lock TTL in milliseconds
+  retryCount: number;   // Number of acquire attempts
+  retryDelay: number;   // Delay between retries in ms
+  driftFactor: number;  // Clock drift factor (0.01 = 1%)
+}
+
+interface Lock {
+  resource: string;
+  value: string;
+  ttl: number;
+  expiration: number;
+}
+
+const DEFAULT_OPTIONS: LockOptions = {
+  ttl: 10000,
+  retryCount: 3,
+  retryDelay: 200,
+  driftFactor: 0.01,
+};
+
+export class RedlockManager {
+  private clients: RedisClientType[];
+  private options: LockOptions;
+  private quorum: number;
+
+  constructor(clients: RedisClientType[], options: Partial<LockOptions> = {}) {
+    if (clients.length < 3) {
+      throw new Error('Redlock requires at least 3 Redis instances');
+    }
+    this.clients = clients;
+    this.options = { ...DEFAULT_OPTIONS, ...options };
+    this.quorum = Math.floor(clients.length / 2) + 1;
+  }
+
+  async acquire(resource: string): Promise<Lock | null> {
+    const value = crypto.randomUUID();
+
+    for (let attempt = 0; attempt < this.options.retryCount; attempt++) {
+      const startTime = Date.now();
+      let locksAcquired = 0;
+
+      const results = await Promise.allSettled(
+        this.clients.map((client) => this.lockInstance(client, resource, value))
+      );
+
+      locksAcquired = results.filter(
+        (r) => r.status === 'fulfilled' && r.value === true
+      ).length;
+
+      const elapsed = Date.now() - startTime;
+      const drift = Math.round(this.options.ttl * this.options.driftFactor) + 2;
+      const remainingTTL = this.options.ttl - elapsed - drift;
+
+      if (locksAcquired >= this.quorum && remainingTTL > 0) {
+        return { resource, value, ttl: remainingTTL, expiration: Date.now() + remainingTTL };
+      }
+
+      await this.releaseAll(resource, value);
+      const delay = this.options.retryDelay + Math.random() * this.options.retryDelay;
+      await this.sleep(delay);
+    }
+
+    return null;
+  }
+
+  async release(lock: Lock): Promise<boolean> {
+    return this.releaseAll(lock.resource, lock.value);
+  }
+
+  private async lockInstance(
+    client: RedisClientType,
+    resource: string,
+    value: string
+  ): Promise<boolean> {
+    try {
+      const result = await client.set(resource, value, { NX: true, PX: this.options.ttl });
+      return result === 'OK';
+    } catch {
+      return false;
+    }
+  }
+
+  private async releaseAll(resource: string, value: string): Promise<boolean> {
+    const script = `
+      if redis.call("get", KEYS[1]) == ARGV[1] then
+        return redis.call("del", KEYS[1])
+      else
+        return 0
+      end
+    `;
+    const results = await Promise.allSettled(
+      this.clients.map((client) =>
+        client.eval(script, { keys: [resource], arguments: [value] })
+      )
+    );
+    const released = results.filter(
+      (r) => r.status === 'fulfilled' && r.value === 1
+    ).length;
+    return released >= this.quorum;
+  }
+
+  private sleep(ms: number): Promise<void> {
+    return new Promise((resolve) => setTimeout(resolve, ms));
+  }
+}
+
+export async function withLock<T>(
+  manager: RedlockManager,
+  resource: string,
+  fn: (lock: Lock) => Promise<T>
+): Promise<T> {
+  const lock = await manager.acquire(resource);
+  if (!lock) {
+    throw new Error(`Failed to acquire lock on: ${resource}`);
+  }
+  try {
+    return await fn(lock);
+  } finally {
+    await manager.release(lock);
+  }
+}
+```
+
+## Usage
+
+```typescript
+import { createClient } from 'redis';
+import { RedlockManager, withLock } from './redlock';
+
+async function main() {
+  const clients = await Promise.all([
+    createClient({ url: 'redis://redis-1:6379' }).connect(),
+    createClient({ url: 'redis://redis-2:6379' }).connect(),
+    createClient({ url: 'redis://redis-3:6379' }).connect(),
+  ]);
+
+  const redlock = new RedlockManager(clients, {
+    ttl: 5000,
+    retryCount: 5,
+    retryDelay: 100,
+  });
+
+  // Using the withLock helper (recommended)
+  const result = await withLock(redlock, 'resource:payment-456', async (lock) => {
+    return await processPayment('payment-456');
+  });
+}
+```
+
+## Notes
+
+- Redlock requires an odd number of independent Redis instances (3 or 5) for proper quorum
+- Set TTL longer than the maximum expected critical section duration plus network round-trip time
+- The Lua release script is atomic and prevents releasing a lock that has already expired and been re-acquired
+- For fencing token support, combine with a monotonically increasing counter to detect stale lock holders
+- Consider the `redlock` npm package for a battle-tested implementation in production
+- Martin Kleppmann's analysis raises valid concerns about Redlock safety under GC pauses; use fencing tokens for critical paths
+- Monitor lock acquisition failures and TTL expirations as key operational metrics

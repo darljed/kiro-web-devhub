@@ -1,0 +1,455 @@
+---
+title: "Token Bucket Rate Limiter"
+description: "Thread-safe token bucket rate limiter using Arc and Mutex with configurable refill rate, burst capacity, and async support via Tokio."
+category: "Rust"
+language: "rust"
+tags: ["rust", "concurrency", "rate-limiting", "tokio", "production-ready"]
+createdAt: "2024-12-10"
+updatedAt: "2025-01-14"
+---
+
+export const codeBlocks = {
+  main: `use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
+
+#[derive(Debug, Clone)]
+pub struct RateLimiterConfig {
+    pub max_tokens: u64,
+    pub refill_rate: u64,       // tokens per second
+    pub refill_interval: Duration,
+}
+
+impl RateLimiterConfig {
+    pub fn new(max_tokens: u64, refill_rate: u64) -> Self {
+        Self {
+            max_tokens,
+            refill_rate,
+            refill_interval: Duration::from_secs(1),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TokenBucketInner {
+    tokens: f64,
+    max_tokens: u64,
+    refill_rate: u64,
+    last_refill: Instant,
+}
+
+impl TokenBucketInner {
+    fn refill(&mut self) {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        let new_tokens = elapsed * self.refill_rate as f64;
+
+        self.tokens = (self.tokens + new_tokens).min(self.max_tokens as f64);
+        self.last_refill = now;
+    }
+
+    fn try_acquire(&mut self, tokens: u64) -> bool {
+        self.refill();
+        if self.tokens >= tokens as f64 {
+            self.tokens -= tokens as f64;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn tokens_available(&mut self) -> u64 {
+        self.refill();
+        self.tokens as u64
+    }
+
+    fn time_until_available(&mut self, tokens: u64) -> Duration {
+        self.refill();
+        if self.tokens >= tokens as f64 {
+            return Duration::ZERO;
+        }
+        let deficit = tokens as f64 - self.tokens;
+        let seconds = deficit / self.refill_rate as f64;
+        Duration::from_secs_f64(seconds)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RateLimiter {
+    inner: Arc<Mutex<TokenBucketInner>>,
+}
+
+impl RateLimiter {
+    pub fn new(config: RateLimiterConfig) -> Self {
+        let inner = TokenBucketInner {
+            tokens: config.max_tokens as f64,
+            max_tokens: config.max_tokens,
+            refill_rate: config.refill_rate,
+            last_refill: Instant::now(),
+        };
+
+        Self {
+            inner: Arc::new(Mutex::new(inner)),
+        }
+    }
+
+    /// Try to acquire tokens without waiting. Returns true if successful.
+    pub async fn try_acquire(&self, tokens: u64) -> bool {
+        let mut inner = self.inner.lock().await;
+        inner.try_acquire(tokens)
+    }
+
+    /// Acquire tokens, waiting if necessary. Returns when tokens are acquired.
+    pub async fn acquire(&self, tokens: u64) {
+        loop {
+            let wait_time = {
+                let mut inner = self.inner.lock().await;
+                if inner.try_acquire(tokens) {
+                    return;
+                }
+                inner.time_until_available(tokens)
+            };
+
+            tokio::time::sleep(wait_time).await;
+        }
+    }
+
+    /// Acquire tokens with a timeout. Returns Ok(()) if acquired, Err(()) on timeout.
+    pub async fn acquire_with_timeout(
+        &self,
+        tokens: u64,
+        timeout: Duration,
+    ) -> Result<(), RateLimitError> {
+        let deadline = Instant::now() + timeout;
+
+        loop {
+            let wait_time = {
+                let mut inner = self.inner.lock().await;
+                if inner.try_acquire(tokens) {
+                    return Ok(());
+                }
+                inner.time_until_available(tokens)
+            };
+
+            if Instant::now() + wait_time > deadline {
+                return Err(RateLimitError::Timeout);
+            }
+
+            tokio::time::sleep(wait_time).await;
+        }
+    }
+
+    /// Get current available tokens.
+    pub async fn available(&self) -> u64 {
+        let mut inner = self.inner.lock().await;
+        inner.tokens_available()
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RateLimitError {
+    #[error("rate limit acquisition timed out")]
+    Timeout,
+}`,
+  test: `#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{self, Duration};
+
+    #[tokio::test]
+    async fn test_basic_acquire() {
+        let limiter = RateLimiter::new(RateLimiterConfig::new(10, 10));
+
+        // Should succeed immediately with full bucket
+        assert!(limiter.try_acquire(5).await);
+        assert_eq!(limiter.available().await, 5);
+    }
+
+    #[tokio::test]
+    async fn test_exhaustion() {
+        let limiter = RateLimiter::new(RateLimiterConfig::new(5, 5));
+
+        // Drain the bucket
+        assert!(limiter.try_acquire(5).await);
+        // Should fail when empty
+        assert!(!limiter.try_acquire(1).await);
+    }
+
+    #[tokio::test]
+    async fn test_refill() {
+        time::pause();
+        let limiter = RateLimiter::new(RateLimiterConfig::new(10, 10));
+
+        // Drain all tokens
+        assert!(limiter.try_acquire(10).await);
+        assert!(!limiter.try_acquire(1).await);
+
+        // Advance time by 500ms, should refill 5 tokens
+        time::advance(Duration::from_millis(500)).await;
+        assert_eq!(limiter.available().await, 5);
+    }
+
+    #[tokio::test]
+    async fn test_acquire_waits() {
+        time::pause();
+        let limiter = RateLimiter::new(RateLimiterConfig::new(10, 10));
+
+        assert!(limiter.try_acquire(10).await);
+
+        let limiter_clone = limiter.clone();
+        let handle = tokio::spawn(async move {
+            limiter_clone.acquire(5).await;
+            true
+        });
+
+        time::advance(Duration::from_millis(500)).await;
+        assert!(handle.await.unwrap());
+    }
+
+    #[tokio::test]
+    async fn test_timeout() {
+        time::pause();
+        let limiter = RateLimiter::new(RateLimiterConfig::new(10, 1));
+
+        assert!(limiter.try_acquire(10).await);
+
+        // Need 10 tokens but refill is 1/sec, timeout is 2s
+        let result = limiter
+            .acquire_with_timeout(10, Duration::from_secs(2))
+            .await;
+        assert!(result.is_err());
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_access() {
+        let limiter = RateLimiter::new(RateLimiterConfig::new(100, 100));
+        let mut handles = vec![];
+
+        for _ in 0..10 {
+            let l = limiter.clone();
+            handles.push(tokio::spawn(async move {
+                l.try_acquire(1).await
+            }));
+        }
+
+        let results: Vec<bool> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+
+        assert_eq!(results.iter().filter(|&&r| r).count(), 10);
+    }
+}`,
+};
+
+## Overview
+
+A thread-safe token bucket rate limiter for Rust async applications using Tokio. The token bucket algorithm allows bursts up to the bucket capacity while maintaining a long-term average rate, making it ideal for API clients, request throttling, and resource access control.
+
+Key design decisions:
+- **Arc + Mutex** enables safe sharing across tasks and threads
+- **Lazy refill** calculates tokens on demand instead of running a background timer
+- **Configurable burst capacity** separates sustained rate from burst allowance
+- **Timeout support** prevents indefinite blocking when the system is overloaded
+- **Clone-friendly** via Arc for easy sharing in concurrent handlers
+
+## Code
+
+```rust
+use std::sync::Arc;
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex;
+
+#[derive(Debug, Clone)]
+pub struct RateLimiterConfig {
+    pub max_tokens: u64,
+    pub refill_rate: u64,       // tokens per second
+    pub refill_interval: Duration,
+}
+
+impl RateLimiterConfig {
+    pub fn new(max_tokens: u64, refill_rate: u64) -> Self {
+        Self {
+            max_tokens,
+            refill_rate,
+            refill_interval: Duration::from_secs(1),
+        }
+    }
+}
+
+#[derive(Debug)]
+struct TokenBucketInner {
+    tokens: f64,
+    max_tokens: u64,
+    refill_rate: u64,
+    last_refill: Instant,
+}
+
+impl TokenBucketInner {
+    fn refill(&mut self) {
+        let now = Instant::now();
+        let elapsed = now.duration_since(self.last_refill).as_secs_f64();
+        let new_tokens = elapsed * self.refill_rate as f64;
+
+        self.tokens = (self.tokens + new_tokens).min(self.max_tokens as f64);
+        self.last_refill = now;
+    }
+
+    fn try_acquire(&mut self, tokens: u64) -> bool {
+        self.refill();
+        if self.tokens >= tokens as f64 {
+            self.tokens -= tokens as f64;
+            true
+        } else {
+            false
+        }
+    }
+
+    fn tokens_available(&mut self) -> u64 {
+        self.refill();
+        self.tokens as u64
+    }
+
+    fn time_until_available(&mut self, tokens: u64) -> Duration {
+        self.refill();
+        if self.tokens >= tokens as f64 {
+            return Duration::ZERO;
+        }
+        let deficit = tokens as f64 - self.tokens;
+        let seconds = deficit / self.refill_rate as f64;
+        Duration::from_secs_f64(seconds)
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct RateLimiter {
+    inner: Arc<Mutex<TokenBucketInner>>,
+}
+
+impl RateLimiter {
+    pub fn new(config: RateLimiterConfig) -> Self {
+        let inner = TokenBucketInner {
+            tokens: config.max_tokens as f64,
+            max_tokens: config.max_tokens,
+            refill_rate: config.refill_rate,
+            last_refill: Instant::now(),
+        };
+
+        Self {
+            inner: Arc::new(Mutex::new(inner)),
+        }
+    }
+
+    pub async fn try_acquire(&self, tokens: u64) -> bool {
+        let mut inner = self.inner.lock().await;
+        inner.try_acquire(tokens)
+    }
+
+    pub async fn acquire(&self, tokens: u64) {
+        loop {
+            let wait_time = {
+                let mut inner = self.inner.lock().await;
+                if inner.try_acquire(tokens) {
+                    return;
+                }
+                inner.time_until_available(tokens)
+            };
+            tokio::time::sleep(wait_time).await;
+        }
+    }
+
+    pub async fn acquire_with_timeout(
+        &self,
+        tokens: u64,
+        timeout: Duration,
+    ) -> Result<(), RateLimitError> {
+        let deadline = Instant::now() + timeout;
+        loop {
+            let wait_time = {
+                let mut inner = self.inner.lock().await;
+                if inner.try_acquire(tokens) {
+                    return Ok(());
+                }
+                inner.time_until_available(tokens)
+            };
+            if Instant::now() + wait_time > deadline {
+                return Err(RateLimitError::Timeout);
+            }
+            tokio::time::sleep(wait_time).await;
+        }
+    }
+
+    pub async fn available(&self) -> u64 {
+        let mut inner = self.inner.lock().await;
+        inner.tokens_available()
+    }
+}
+
+#[derive(Debug, thiserror::Error)]
+pub enum RateLimitError {
+    #[error("rate limit acquisition timed out")]
+    Timeout,
+}
+```
+
+## Test
+
+```rust
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::time::{self, Duration};
+
+    #[tokio::test]
+    async fn test_basic_acquire() {
+        let limiter = RateLimiter::new(RateLimiterConfig::new(10, 10));
+        assert!(limiter.try_acquire(5).await);
+        assert_eq!(limiter.available().await, 5);
+    }
+
+    #[tokio::test]
+    async fn test_exhaustion() {
+        let limiter = RateLimiter::new(RateLimiterConfig::new(5, 5));
+        assert!(limiter.try_acquire(5).await);
+        assert!(!limiter.try_acquire(1).await);
+    }
+
+    #[tokio::test]
+    async fn test_refill() {
+        time::pause();
+        let limiter = RateLimiter::new(RateLimiterConfig::new(10, 10));
+        assert!(limiter.try_acquire(10).await);
+        assert!(!limiter.try_acquire(1).await);
+        time::advance(Duration::from_millis(500)).await;
+        assert_eq!(limiter.available().await, 5);
+    }
+
+    #[tokio::test]
+    async fn test_concurrent_access() {
+        let limiter = RateLimiter::new(RateLimiterConfig::new(100, 100));
+        let mut handles = vec![];
+        for _ in 0..10 {
+            let l = limiter.clone();
+            handles.push(tokio::spawn(async move {
+                l.try_acquire(1).await
+            }));
+        }
+        let results: Vec<bool> = futures::future::join_all(handles)
+            .await
+            .into_iter()
+            .map(|r| r.unwrap())
+            .collect();
+        assert_eq!(results.iter().filter(|&&r| r).count(), 10);
+    }
+}
+```
+
+## Notes
+
+- For very high throughput, consider a sharded approach with multiple buckets to reduce contention
+- The `thiserror` crate is used for ergonomic error types; replace with manual `impl` if you prefer no dependencies
+- Token bucket allows full burst up to `max_tokens` followed by sustained `refill_rate` throughput
+- For distributed rate limiting, combine with Redis (see the Redlock pattern) for cross-process coordination
+- Consider using `tokio::sync::Semaphore` for simpler concurrency limiting without the time-based refill
+- Add metrics (prometheus counters) for tokens granted vs denied to monitor throttling in production
