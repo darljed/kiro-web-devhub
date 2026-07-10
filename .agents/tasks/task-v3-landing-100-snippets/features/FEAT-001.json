@@ -2,7 +2,7 @@
   "id": "FEAT-001",
   "type": "feat",
   "description": "Add 100 new MDX snippet files to content/snippets/ distributed across 12 categories. Each snippet must have YAML frontmatter + codeBlocks export + prose following the existing format exactly.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Study the existing snippet format from content/snippets/react-use-debounce.mdx, go-graceful-shutdown.mdx, and splunk-error-aggregation.mdx as reference patterns",
     "Create 15 TypeScript/JavaScript snippets: utility functions (deep-clone, type-guards, retry-with-backoff, etc.), design patterns (singleton, observer, builder), Node.js patterns (stream-pipeline, worker-threads, event-emitter-typed)",
@@ -34,5 +34,5 @@
     "Run: npm run build (must pass - all pages must statically generate)"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Two build issues encountered and fixed: (1) Go octal escape \\033 in go-cli-progress-bar.mdx is not allowed in JS template literals - replaced with \\x1b hex escape. (2) Unescaped ${} in bash-log-parser.mdx and python-pandas-pivot.mdx were interpreted as template expressions - escaped with backslash. Final distribution slightly adjusted from plan: 6 Terraform (not 7), 5 SQL (not 6), 2 Redis (not 3), 2 GraphQL (not 3) to hit exactly 100 new files total. Build generates all 249 static pages successfully."
 }
