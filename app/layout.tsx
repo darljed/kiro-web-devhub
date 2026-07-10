@@ -16,6 +16,7 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
+  metadataBase: new URL("https://devhub.example.com"),
   title: "DevHub - Code Snippet Vault for Developers",
   description:
     "Organize, search, and share reusable code snippets across languages. A developer tool for teams and individuals who value clean, accessible code.",
