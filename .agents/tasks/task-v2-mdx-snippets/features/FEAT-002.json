@@ -2,7 +2,7 @@
   "id": "FEAT-002",
   "type": "feat",
   "description": "Add OG image generation for snippet pages and expand the snippet library to 12+ production-quality snippets across Splunk, React/Next.js, Python, and Bash/DevOps categories.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Create app/snippets/[id]/opengraph-image.tsx following the Next.js OG image file convention from node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/01-metadata/opengraph-image.md. Use ImageResponse from next/og. Generate a 1200x630 image with the snippet title, category badge, and language indicator. Style with a dark gradient background. Use process.cwd() to load a font file if desired, or use system fonts. Export alt, size, and contentType constants.",
     "Update app/snippets/[id]/page.tsx generateMetadata to include comprehensive metadata: title, description, openGraph fields (title, description, type: article), twitter card meta (card: summary_large_image).",
@@ -24,5 +24,5 @@
     "npm run lint - confirm no lint errors"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "1. Bash scripts in codeBlocks template literals require escaping ${...} as \\${...} to prevent JavaScript template literal interpolation. Plain $variable references (without braces) are fine. 2. Adding generateStaticParams export to opengraph-image.tsx is needed for static OG image generation at build time. Without it, the route renders dynamically. 3. The metadataBase warning is non-critical - it defaults to http://localhost:3000 for resolving relative OG image URLs. 4. Build produces 29 static pages total: 12 snippet pages + 12 OG images + home + not-found + snippets index + 2 others."
 }
