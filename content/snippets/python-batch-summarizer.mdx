@@ -1,0 +1,112 @@
+---
+title: "Batch Text Summarizer"
+description: "A Python script that reads text files from a directory and generates concise summaries using a local transformer model."
+category: "Python"
+language: "python"
+tags: ["python", "ai", "transformers", "batch-processing", "nlp"]
+createdAt: "2024-11-20"
+updatedAt: "2024-12-05"
+---
+
+export const codeBlocks = {
+  main: `from pathlib import Path
+from transformers import pipeline
+
+summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+
+def summarize_files(directory: str, max_length: int = 130) -> dict[str, str]:
+    results: dict[str, str] = {}
+    for file_path in Path(directory).glob("*.txt"):
+        text = file_path.read_text(encoding="utf-8")
+        summary = summarizer(text, max_length=max_length, min_length=30, do_sample=False)
+        results[file_path.name] = summary[0]["summary_text"]
+    return results
+
+if __name__ == "__main__":
+    summaries = summarize_files("./documents")
+    for name, summary in summaries.items():
+        print(f"{name}:\\n{summary}\\n")`,
+  usage: `# Install dependencies
+# pip install transformers torch
+
+# Directory structure:
+# ./documents/
+#   article1.txt
+#   article2.txt
+#   report.txt
+
+from batch_summarizer import summarize_files
+
+# Basic usage
+summaries = summarize_files("./documents")
+
+# Custom max length
+summaries = summarize_files("./documents", max_length=200)
+
+# Process results
+for filename, summary in summaries.items():
+    print(f"File: {filename}")
+    print(f"Summary: {summary}")
+    print("---")`,
+};
+
+## Overview
+
+This script leverages the Hugging Face Transformers library to batch-process text files and generate concise summaries. It uses the BART-Large-CNN model, which is pre-trained for abstractive summarization tasks.
+
+## Code
+
+```python
+from pathlib import Path
+from transformers import pipeline
+
+summarizer = pipeline("summarization", model="facebook/bart-large-cnn")
+
+def summarize_files(directory: str, max_length: int = 130) -> dict[str, str]:
+    results: dict[str, str] = {}
+    for file_path in Path(directory).glob("*.txt"):
+        text = file_path.read_text(encoding="utf-8")
+        summary = summarizer(text, max_length=max_length, min_length=30, do_sample=False)
+        results[file_path.name] = summary[0]["summary_text"]
+    return results
+
+if __name__ == "__main__":
+    summaries = summarize_files("./documents")
+    for name, summary in summaries.items():
+        print(f"{name}:\n{summary}\n")
+```
+
+## Usage
+
+```python
+# Install dependencies
+# pip install transformers torch
+
+# Directory structure:
+# ./documents/
+#   article1.txt
+#   article2.txt
+#   report.txt
+
+from batch_summarizer import summarize_files
+
+# Basic usage
+summaries = summarize_files("./documents")
+
+# Custom max length
+summaries = summarize_files("./documents", max_length=200)
+
+# Process results
+for filename, summary in summaries.items():
+    print(f"File: {filename}")
+    print(f"Summary: {summary}")
+    print("---")
+```
+
+## Notes
+
+- The BART-Large-CNN model requires ~1.6GB of disk space on first download
+- Input text should be between 50 and 1024 tokens for best results
+- For GPU acceleration, install PyTorch with CUDA support
+- Consider chunking for documents longer than the model's max input length (1024 tokens)
+- Add error handling for empty files or encoding issues in production

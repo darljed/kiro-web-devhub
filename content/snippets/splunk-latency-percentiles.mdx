@@ -1,0 +1,75 @@
+---
+title: "Latency Percentiles by Service"
+description: "SPL query for calculating latency percentiles (p50, p95, p99) grouped by service name, with trend analysis over time."
+category: "Splunk"
+language: "spl"
+tags: ["splunk-cloud", "observability", "latency", "percentiles", "production-ready"]
+createdAt: "2024-12-01"
+updatedAt: "2025-01-05"
+---
+
+export const codeBlocks = {
+  main: `index=microservices sourcetype=access_combined
+| eval response_time_ms = round(response_time * 1000, 2)
+| stats
+    perc50(response_time_ms) as p50,
+    perc95(response_time_ms) as p95,
+    perc99(response_time_ms) as p99,
+    avg(response_time_ms) as avg_ms,
+    count as request_count
+    by service_name
+| eval p95_ratio = round(p95 / p50, 2)
+| sort - p99
+| table service_name, request_count, p50, p95, p99, avg_ms, p95_ratio`,
+  timechart: `index=microservices sourcetype=access_combined
+| eval response_time_ms = round(response_time * 1000, 2)
+| timechart span=5m
+    perc50(response_time_ms) as p50,
+    perc95(response_time_ms) as p95,
+    perc99(response_time_ms) as p99
+    by service_name`,
+};
+
+## Overview
+
+Latency percentiles provide far more insight than simple averages. The p95 and p99 values reveal tail latency issues that averages hide. This query calculates percentile breakdowns per service and includes a p95/p50 ratio to flag services with high latency variance.
+
+A high p95/p50 ratio (greater than 5x) often indicates intermittent issues like garbage collection pauses, connection pool exhaustion, or downstream timeouts.
+
+## Code
+
+```spl
+index=microservices sourcetype=access_combined
+| eval response_time_ms = round(response_time * 1000, 2)
+| stats
+    perc50(response_time_ms) as p50,
+    perc95(response_time_ms) as p95,
+    perc99(response_time_ms) as p99,
+    avg(response_time_ms) as avg_ms,
+    count as request_count
+    by service_name
+| eval p95_ratio = round(p95 / p50, 2)
+| sort - p99
+| table service_name, request_count, p50, p95, p99, avg_ms, p95_ratio
+```
+
+## Timechart Variant
+
+```spl
+index=microservices sourcetype=access_combined
+| eval response_time_ms = round(response_time * 1000, 2)
+| timechart span=5m
+    perc50(response_time_ms) as p50,
+    perc95(response_time_ms) as p95,
+    perc99(response_time_ms) as p99
+    by service_name
+```
+
+## Notes
+
+- Adjust the `span=5m` in the timechart variant depending on your data volume and alerting needs
+- The `perc50`, `perc95`, `perc99` functions are Splunk built-ins and are more efficient than `percentile(field, 50)`
+- For high-cardinality services, add a `where request_count > 100` filter to avoid noise from low-traffic endpoints
+- Consider creating a saved search with an alert threshold on p99 exceeding your SLA (e.g., `where p99 > 2000`)
+- Works best with structured logs that include a numeric `response_time` field
+

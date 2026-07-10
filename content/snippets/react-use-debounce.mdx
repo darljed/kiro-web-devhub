@@ -1,0 +1,166 @@
+---
+title: "useDebounce Hook"
+description: "A custom React hook that debounces a value by a specified delay, useful for search inputs and API calls."
+category: "React"
+language: "typescript"
+tags: ["react", "hooks", "performance", "production-ready", "react-19"]
+createdAt: "2024-11-15"
+updatedAt: "2024-12-10"
+---
+
+export const codeBlocks = {
+  main: `import { useState, useEffect } from "react";
+
+export function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState<T>(value);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+
+  return debouncedValue;
+}`,
+  test: `import { renderHook, act } from "@testing-library/react";
+import { useDebounce } from "./useDebounce";
+
+describe("useDebounce", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it("returns initial value immediately", () => {
+    const { result } = renderHook(() => useDebounce("hello", 500));
+    expect(result.current).toBe("hello");
+  });
+
+  it("debounces value changes", () => {
+    const { result, rerender } = renderHook(
+      ({ value, delay }) => useDebounce(value, delay),
+      { initialProps: { value: "hello", delay: 500 } }
+    );
+
+    rerender({ value: "world", delay: 500 });
+    expect(result.current).toBe("hello");
+
+    act(() => { jest.advanceTimersByTime(500); });
+    expect(result.current).toBe("world");
+  });
+});`,
+  usage: `import { useState } from "react";
+import { useDebounce } from "@/hooks/useDebounce";
+
+export function SearchInput() {
+  const [query, setQuery] = useState("");
+  const debouncedQuery = useDebounce(query, 300);
+
+  useEffect(() => {
+    if (debouncedQuery) {
+      // Fetch search results
+      fetchResults(debouncedQuery);
+    }
+  }, [debouncedQuery]);
+
+  return (
+    <input
+      value={query}
+      onChange={(e) => setQuery(e.target.value)}
+      placeholder="Search..."
+    />
+  );
+}`,
+};
+
+## Overview
+
+A lightweight custom hook that delays updating a value until a specified period of inactivity. This is essential for preventing excessive API calls during user input, such as search-as-you-type functionality.
+
+## Code
+
+```typescript
+import { useState, useEffect } from "react";
+
+export function useDebounce<T>(value: T, delay: number): T {
+  const [debouncedValue, setDebouncedValue] = useState<T>(value);
+
+  useEffect(() => {
+    const timer = setTimeout(() => setDebouncedValue(value), delay);
+    return () => clearTimeout(timer);
+  }, [value, delay]);
+
+  return debouncedValue;
+}
+```
+
+## Test
+
+```typescript
+import { renderHook, act } from "@testing-library/react";
+import { useDebounce } from "./useDebounce";
+
+describe("useDebounce", () => {
+  beforeEach(() => {
+    jest.useFakeTimers();
+  });
+
+  afterEach(() => {
+    jest.useRealTimers();
+  });
+
+  it("returns initial value immediately", () => {
+    const { result } = renderHook(() => useDebounce("hello", 500));
+    expect(result.current).toBe("hello");
+  });
+
+  it("debounces value changes", () => {
+    const { result, rerender } = renderHook(
+      ({ value, delay }) => useDebounce(value, delay),
+      { initialProps: { value: "hello", delay: 500 } }
+    );
+
+    rerender({ value: "world", delay: 500 });
+    expect(result.current).toBe("hello");
+
+    act(() => { jest.advanceTimersByTime(500); });
+    expect(result.current).toBe("world");
+  });
+});
+```
+
+## Usage
+
+```tsx
+import { useState } from "react";
+import { useDebounce } from "@/hooks/useDebounce";
+
+export function SearchInput() {
+  const [query, setQuery] = useState("");
+  const debouncedQuery = useDebounce(query, 300);
+
+  useEffect(() => {
+    if (debouncedQuery) {
+      // Fetch search results
+      fetchResults(debouncedQuery);
+    }
+  }, [debouncedQuery]);
+
+  return (
+    <input
+      value={query}
+      onChange={(e) => setQuery(e.target.value)}
+      placeholder="Search..."
+    />
+  );
+}
+```
+
+## Notes
+
+- The delay parameter is in milliseconds (300-500ms is common for search inputs)
+- The hook cleans up timers on unmount to prevent memory leaks
+- Works with any value type thanks to TypeScript generics
+- For more complex scenarios, consider `useDeferredValue` from React 19

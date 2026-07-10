@@ -1,0 +1,208 @@
+---
+title: "Docker Healthcheck Script"
+description: "Multi-endpoint Docker healthcheck script that verifies service readiness by checking HTTP endpoints, TCP ports, and database connectivity."
+category: "Bash"
+language: "bash"
+tags: ["docker", "healthcheck", "devops", "containers", "production-ready"]
+createdAt: "2024-11-28"
+updatedAt: "2025-01-03"
+---
+
+export const codeBlocks = {
+  main: `#!/usr/bin/env bash
+set -euo pipefail
+
+# Configuration
+HTTP_ENDPOINT="\${HEALTH_HTTP_URL:-http://localhost:8080/health}"
+DB_HOST="\${HEALTH_DB_HOST:-localhost}"
+DB_PORT="\${HEALTH_DB_PORT:-5432}"
+REDIS_HOST="\${HEALTH_REDIS_HOST:-localhost}"
+REDIS_PORT="\${HEALTH_REDIS_PORT:-6379}"
+TIMEOUT="\${HEALTH_TIMEOUT:-5}"
+
+# Track failures
+FAILURES=()
+
+check_http() {
+  local url="$1"
+  local response
+  response=$(curl -sf --max-time "$TIMEOUT" -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) || {
+    FAILURES+=("HTTP check failed: $url (timeout or connection refused)")
+    return 1
+  }
+
+  if [[ "$response" -lt 200 || "$response" -ge 400 ]]; then
+    FAILURES+=("HTTP check failed: $url (status: $response)")
+    return 1
+  fi
+}
+
+check_tcp() {
+  local host="$1"
+  local port="$2"
+  local label="\${3:-$host:$port}"
+
+  if ! timeout "$TIMEOUT" bash -c "echo > /dev/tcp/$host/$port" 2>/dev/null; then
+    FAILURES+=("TCP check failed: $label ($host:$port)")
+    return 1
+  fi
+}
+
+check_disk_space() {
+  local threshold="\${1:-90}"
+  local usage
+  usage=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
+
+  if [[ "$usage" -ge "$threshold" ]]; then
+    FAILURES+=("Disk space critical: \${usage}% used (threshold: \${threshold}%)")
+    return 1
+  fi
+}
+
+# Run checks
+check_http "$HTTP_ENDPOINT" || true
+check_tcp "$DB_HOST" "$DB_PORT" "PostgreSQL" || true
+check_tcp "$REDIS_HOST" "$REDIS_PORT" "Redis" || true
+check_disk_space 90 || true
+
+# Report results
+if [[ \${#FAILURES[@]} -gt 0 ]]; then
+  echo "UNHEALTHY - \${#FAILURES[@]} check(s) failed:"
+  for failure in "\${FAILURES[@]}"; do
+    echo "  - $failure"
+  done
+  exit 1
+fi
+
+echo "HEALTHY - All checks passed"
+exit 0`,
+  dockerfile: `FROM node:20-alpine AS base
+
+# Install curl for healthcheck
+RUN apk add --no-cache curl bash
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+
+# Add healthcheck script
+COPY scripts/healthcheck.sh /usr/local/bin/healthcheck
+RUN chmod +x /usr/local/bin/healthcheck
+
+# Configure Docker healthcheck
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \\
+  CMD /usr/local/bin/healthcheck
+
+EXPOSE 8080
+CMD ["node", "server.js"]`,
+};
+
+## Overview
+
+Container healthchecks are critical for orchestrators like Docker Compose and Kubernetes to determine if a service is ready to accept traffic. This script goes beyond a simple HTTP ping by checking multiple dependencies (database, cache, disk space), providing clear failure messages for debugging.
+
+The script uses environment variables for configuration, making it reusable across services without modification.
+
+## Code
+
+```bash
+#!/usr/bin/env bash
+set -euo pipefail
+
+# Configuration
+HTTP_ENDPOINT="${HEALTH_HTTP_URL:-http://localhost:8080/health}"
+DB_HOST="${HEALTH_DB_HOST:-localhost}"
+DB_PORT="${HEALTH_DB_PORT:-5432}"
+REDIS_HOST="${HEALTH_REDIS_HOST:-localhost}"
+REDIS_PORT="${HEALTH_REDIS_PORT:-6379}"
+TIMEOUT="${HEALTH_TIMEOUT:-5}"
+
+# Track failures
+FAILURES=()
+
+check_http() {
+  local url="$1"
+  local response
+  response=$(curl -sf --max-time "$TIMEOUT" -o /dev/null -w "%{http_code}" "$url" 2>/dev/null) || {
+    FAILURES+=("HTTP check failed: $url (timeout or connection refused)")
+    return 1
+  }
+
+  if [[ "$response" -lt 200 || "$response" -ge 400 ]]; then
+    FAILURES+=("HTTP check failed: $url (status: $response)")
+    return 1
+  fi
+}
+
+check_tcp() {
+  local host="$1"
+  local port="$2"
+  local label="${3:-$host:$port}"
+
+  if ! timeout "$TIMEOUT" bash -c "echo > /dev/tcp/$host/$port" 2>/dev/null; then
+    FAILURES+=("TCP check failed: $label ($host:$port)")
+    return 1
+  fi
+}
+
+check_disk_space() {
+  local threshold="${1:-90}"
+  local usage
+  usage=$(df / | awk 'NR==2 {print $5}' | tr -d '%')
+
+  if [[ "$usage" -ge "$threshold" ]]; then
+    FAILURES+=("Disk space critical: ${usage}% used (threshold: ${threshold}%)")
+    return 1
+  fi
+}
+
+# Run checks
+check_http "$HTTP_ENDPOINT" || true
+check_tcp "$DB_HOST" "$DB_PORT" "PostgreSQL" || true
+check_tcp "$REDIS_HOST" "$REDIS_PORT" "Redis" || true
+check_disk_space 90 || true
+
+# Report results
+if [[ ${#FAILURES[@]} -gt 0 ]]; then
+  echo "UNHEALTHY - ${#FAILURES[@]} check(s) failed:"
+  for failure in "${FAILURES[@]}"; do
+    echo "  - $failure"
+  done
+  exit 1
+fi
+
+echo "HEALTHY - All checks passed"
+exit 0
+```
+
+## Dockerfile Usage
+
+```dockerfile
+FROM node:20-alpine AS base
+RUN apk add --no-cache curl bash
+
+WORKDIR /app
+COPY package*.json ./
+RUN npm ci --only=production
+COPY . .
+
+COPY scripts/healthcheck.sh /usr/local/bin/healthcheck
+RUN chmod +x /usr/local/bin/healthcheck
+
+HEALTHCHECK --interval=30s --timeout=10s --start-period=15s --retries=3 \
+  CMD /usr/local/bin/healthcheck
+
+EXPOSE 8080
+CMD ["node", "server.js"]
+```
+
+## Notes
+
+- The `|| true` after each check prevents `set -e` from exiting on the first failure, allowing all checks to run
+- Use `--start-period` in the Dockerfile HEALTHCHECK to give the application time to initialize before health checks begin
+- The TCP check uses bash built-in `/dev/tcp` which does not require additional tools like `nc`
+- For Kubernetes, expose this as an HTTP endpoint at `/healthz` instead of a script
+- Keep the timeout shorter than the Docker healthcheck `--timeout` to avoid race conditions
+- Add additional checks as needed: queue depth, memory usage, certificate expiry
+

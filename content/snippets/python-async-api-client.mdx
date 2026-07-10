@@ -1,0 +1,255 @@
+---
+title: "Async API Client with Retry"
+description: "Production-ready async HTTP client using aiohttp with automatic retry, session management, and structured error handling."
+category: "Python"
+language: "python"
+tags: ["python", "async", "aiohttp", "retry", "api-client", "production-ready"]
+createdAt: "2024-11-20"
+updatedAt: "2025-01-10"
+---
+
+export const codeBlocks = {
+  main: `import asyncio
+import aiohttp
+from typing import Any
+from dataclasses import dataclass
+
+
+@dataclass
+class APIResponse:
+    status: int
+    data: Any
+    headers: dict
+
+
+class AsyncAPIClient:
+    """Production async API client with retry, timeout, and session management."""
+
+    def __init__(
+        self,
+        base_url: str,
+        timeout: int = 30,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
+        headers: dict | None = None,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = aiohttp.ClientTimeout(total=timeout)
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self.default_headers = headers or {}
+        self._session: aiohttp.ClientSession | None = None
+
+    async def __aenter__(self):
+        self._session = aiohttp.ClientSession(
+            timeout=self.timeout,
+            headers=self.default_headers,
+        )
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._session:
+            await self._session.close()
+            self._session = None
+
+    async def _request(
+        self, method: str, path: str, **kwargs
+    ) -> APIResponse:
+        if not self._session:
+            raise RuntimeError("Client not initialized. Use 'async with' context.")
+
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        last_error: Exception | None = None
+
+        for attempt in range(self.max_retries):
+            try:
+                async with self._session.request(method, url, **kwargs) as resp:
+                    data = await resp.json() if resp.content_type == "application/json" else await resp.text()
+
+                    if resp.status >= 500:
+                        raise aiohttp.ServerConnectionError(f"Server error: {resp.status}")
+
+                    return APIResponse(
+                        status=resp.status,
+                        data=data,
+                        headers=dict(resp.headers),
+                    )
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                last_error = e
+                if attempt < self.max_retries - 1:
+                    delay = self.retry_delay * (2 ** attempt)
+                    await asyncio.sleep(delay)
+
+        raise last_error or RuntimeError("Request failed after retries")
+
+    async def get(self, path: str, **kwargs) -> APIResponse:
+        return await self._request("GET", path, **kwargs)
+
+    async def post(self, path: str, **kwargs) -> APIResponse:
+        return await self._request("POST", path, **kwargs)
+
+    async def put(self, path: str, **kwargs) -> APIResponse:
+        return await self._request("PUT", path, **kwargs)
+
+    async def delete(self, path: str, **kwargs) -> APIResponse:
+        return await self._request("DELETE", path, **kwargs)`,
+  usage: `import asyncio
+from api_client import AsyncAPIClient
+
+
+async def main():
+    async with AsyncAPIClient(
+        base_url="https://api.example.com/v1",
+        timeout=15,
+        max_retries=3,
+        headers={"Authorization": "Bearer YOUR_TOKEN"},
+    ) as client:
+        # Simple GET
+        users = await client.get("/users")
+        print(f"Got {len(users.data)} users")
+
+        # POST with JSON body
+        new_user = await client.post(
+            "/users",
+            json={"name": "Alice", "email": "alice@example.com"},
+        )
+        print(f"Created user: {new_user.data['id']}")
+
+        # Parallel requests
+        results = await asyncio.gather(
+            client.get("/users/1"),
+            client.get("/users/2"),
+            client.get("/users/3"),
+        )
+        for r in results:
+            print(f"User: {r.data['name']}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())`,
+};
+
+## Overview
+
+A structured async HTTP client built on `aiohttp` that handles the common production concerns: automatic retries with exponential backoff, session lifecycle management via async context managers, configurable timeouts, and typed response objects.
+
+The client retries only on server errors (5xx) and connection failures, not on client errors (4xx), which is the correct behavior for most API integrations.
+
+## Code
+
+```python
+import asyncio
+import aiohttp
+from typing import Any
+from dataclasses import dataclass
+
+
+@dataclass
+class APIResponse:
+    status: int
+    data: Any
+    headers: dict
+
+
+class AsyncAPIClient:
+    """Production async API client with retry, timeout, and session management."""
+
+    def __init__(
+        self,
+        base_url: str,
+        timeout: int = 30,
+        max_retries: int = 3,
+        retry_delay: float = 1.0,
+        headers: dict | None = None,
+    ):
+        self.base_url = base_url.rstrip("/")
+        self.timeout = aiohttp.ClientTimeout(total=timeout)
+        self.max_retries = max_retries
+        self.retry_delay = retry_delay
+        self.default_headers = headers or {}
+        self._session: aiohttp.ClientSession | None = None
+
+    async def __aenter__(self):
+        self._session = aiohttp.ClientSession(
+            timeout=self.timeout,
+            headers=self.default_headers,
+        )
+        return self
+
+    async def __aexit__(self, exc_type, exc_val, exc_tb):
+        if self._session:
+            await self._session.close()
+            self._session = None
+
+    async def _request(self, method: str, path: str, **kwargs) -> APIResponse:
+        if not self._session:
+            raise RuntimeError("Client not initialized. Use 'async with' context.")
+
+        url = f"{self.base_url}/{path.lstrip('/')}"
+        last_error: Exception | None = None
+
+        for attempt in range(self.max_retries):
+            try:
+                async with self._session.request(method, url, **kwargs) as resp:
+                    data = await resp.json() if resp.content_type == "application/json" else await resp.text()
+
+                    if resp.status >= 500:
+                        raise aiohttp.ServerConnectionError(f"Server error: {resp.status}")
+
+                    return APIResponse(status=resp.status, data=data, headers=dict(resp.headers))
+            except (aiohttp.ClientError, asyncio.TimeoutError) as e:
+                last_error = e
+                if attempt < self.max_retries - 1:
+                    delay = self.retry_delay * (2 ** attempt)
+                    await asyncio.sleep(delay)
+
+        raise last_error or RuntimeError("Request failed after retries")
+
+    async def get(self, path: str, **kwargs) -> APIResponse:
+        return await self._request("GET", path, **kwargs)
+
+    async def post(self, path: str, **kwargs) -> APIResponse:
+        return await self._request("POST", path, **kwargs)
+```
+
+## Usage
+
+```python
+import asyncio
+from api_client import AsyncAPIClient
+
+
+async def main():
+    async with AsyncAPIClient(
+        base_url="https://api.example.com/v1",
+        timeout=15,
+        max_retries=3,
+        headers={"Authorization": "Bearer YOUR_TOKEN"},
+    ) as client:
+        # Simple GET
+        users = await client.get("/users")
+        print(f"Got {len(users.data)} users")
+
+        # Parallel requests
+        results = await asyncio.gather(
+            client.get("/users/1"),
+            client.get("/users/2"),
+            client.get("/users/3"),
+        )
+        for r in results:
+            print(f"User: {r.data['name']}")
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
+```
+
+## Notes
+
+- Always use the `async with` context manager to ensure proper session cleanup
+- The exponential backoff (`retry_delay * 2^attempt`) prevents thundering herd issues
+- Server errors (5xx) trigger retries; client errors (4xx) do not, since retrying a bad request is pointless
+- For production, add request/response logging with correlation IDs
+- Consider adding a circuit breaker pattern for services that fail repeatedly
+- The `aiohttp.ClientSession` reuses TCP connections internally, so creating one session per client lifetime is optimal
+

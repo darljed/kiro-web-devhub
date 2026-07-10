@@ -1,0 +1,65 @@
+---
+title: "Aggregate Errors by Source"
+description: "A Splunk SPL query that aggregates error events by source and displays the top offenders over the last 24 hours."
+category: "Splunk"
+language: "spl"
+tags: ["splunk", "monitoring", "error-tracking", "production-ready"]
+createdAt: "2024-12-01"
+updatedAt: "2024-12-15"
+---
+
+export const codeBlocks = {
+  main: `index=main sourcetype=application level=ERROR earliest=-24h
+| stats count AS error_count BY source
+| sort -error_count
+| head 10
+| table source, error_count`,
+  usage: `# Schedule this as a saved search in Splunk
+# Set alert threshold: error_count > 100
+# Configure email or Slack webhook action
+
+index=main sourcetype=application level=ERROR earliest=-24h
+| stats count AS error_count BY source
+| sort -error_count
+| head 10
+| table source, error_count
+| where error_count > 100`,
+};
+
+## Overview
+
+This SPL query helps identify the most problematic sources in your application by aggregating error-level events from the last 24 hours. It groups errors by their source field, counts occurrences, and presents the top 10 offenders.
+
+## Code
+
+```spl
+index=main sourcetype=application level=ERROR earliest=-24h
+| stats count AS error_count BY source
+| sort -error_count
+| head 10
+| table source, error_count
+```
+
+## Usage Example
+
+Use this as a scheduled saved search with alerting:
+
+```spl
+# Schedule this as a saved search in Splunk
+# Set alert threshold: error_count > 100
+# Configure email or Slack webhook action
+
+index=main sourcetype=application level=ERROR earliest=-24h
+| stats count AS error_count BY source
+| sort -error_count
+| head 10
+| table source, error_count
+| where error_count > 100
+```
+
+## Notes
+
+- Adjust `earliest=-24h` for different time windows (e.g., `-1h`, `-7d`)
+- Replace `sourcetype=application` with your specific sourcetype
+- Add `| timechart` for trend visualization over time
+- Consider adding `span=1h` for hourly granularity in dashboards

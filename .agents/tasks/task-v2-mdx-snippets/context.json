@@ -1,0 +1,31 @@
+{
+  "project_type": "Next.js 16 App Router static site with React 19",
+  "language": "TypeScript/TSX",
+  "build_system": "npm with Next.js (Turbopack). Config in next.config.ts. Tailwind v4 via @tailwindcss/postcss plugin in postcss.config.mjs.",
+  "test_framework": "No test framework currently configured. Validation is via npm run build (static generation) and npm run lint (eslint).",
+  "build_command": "npm run build",
+  "test_command": "npm run lint",
+  "verification_instructions": "1. Run npm run build - must produce successful static build with all snippet pages generated. 2. Run npm run lint - must pass with no errors. 3. Verify all MDX snippets generate static pages in build output.",
+  "snapshot_or_generated_files": null,
+  "setup_instructions": "npm install (node_modules already present)",
+  "environment_constraints": "OPEN_INTERNET - full npm access. Node.js 22, npm, pnpm available. AGENTS.md warns Next.js 16 has breaking changes vs training data - check node_modules/next/dist/docs/ for current API.",
+  "contribution_requirements": "Use responsive Tailwind CSS utility classes. Ensure Semantic HTML for all layout sections. Maintain dark/light mode support (next-themes, class-based). Keep static generation (no API routes for data).",
+  "key_patterns": "1. App Router pages in app/ directory. 2. params is a Promise in Next.js 16 (await params in generateMetadata and page components). 3. Client components use 'use client' directive. 4. Dark mode via next-themes ThemeProvider with class attribute. 5. @custom-variant dark in globals.css for Tailwind v4. 6. useMounted() hook pattern for hydration-safe theme UI. 7. generateStaticParams + dynamicParams=false for SSG pages. 8. MDX support per docs: use @next/mdx with mdx-components.tsx file, dynamic imports for content, remark/rehype plugins. 9. OG images via opengraph-image.tsx file convention using ImageResponse from next/og. 10. Tailwind v4 uses CSS-first config (@import 'tailwindcss' in globals.css, @theme inline block).",
+  "relevant_files": [
+    "lib/data.ts",
+    "app/snippets/page.tsx",
+    "app/snippets/[id]/page.tsx",
+    "components/SnippetSearch.tsx",
+    "components/CopyButton.tsx",
+    "app/layout.tsx",
+    "app/globals.css",
+    "next.config.ts",
+    "postcss.config.mjs",
+    "tsconfig.json",
+    "components/Navbar.tsx",
+    "components/ThemeProvider.tsx",
+    "node_modules/next/dist/docs/01-app/02-guides/mdx.md",
+    "node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/01-metadata/opengraph-image.md"
+  ],
+  "directory_structure": "app/ - routes (layout.tsx, page.tsx, snippets/page.tsx, snippets/[id]/page.tsx). components/ - shared UI (Navbar, Footer, CopyButton, SnippetSearch, ThemeProvider, landing/). hooks/ - useMounted.ts. lib/ - data.ts (current snippet store). public/ - static assets."
+}

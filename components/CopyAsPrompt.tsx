@@ -1,14 +1,22 @@
 "use client";
 
 import { useState } from "react";
-import { Copy, Check, X } from "lucide-react";
+import { Sparkles, Check, X } from "lucide-react";
 
-export function CopyButton({ code }: { code: string }) {
+interface CopyAsPromptProps {
+  code: string;
+  description: string;
+  language: string;
+}
+
+export function CopyAsPrompt({ code, description, language }: CopyAsPromptProps) {
   const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
 
   const handleCopy = async () => {
+    const prompt = `Use this pattern in my code:\n\n${code}\n\nFollow these conventions: ${description}\n\nLanguage: ${language}`;
+
     try {
-      await navigator.clipboard.writeText(code);
+      await navigator.clipboard.writeText(prompt);
       setState("copied");
       setTimeout(() => setState("idle"), 2000);
     } catch {
@@ -24,10 +32,10 @@ export function CopyButton({ code }: { code: string }) {
       className="flex items-center gap-1.5 rounded-md border border-zinc-300 px-3 py-1.5 text-sm font-medium text-zinc-700 transition-colors hover:bg-zinc-100 dark:border-zinc-600 dark:text-zinc-300 dark:hover:bg-zinc-800"
       aria-label={
         state === "copied"
-          ? "Copied"
+          ? "Copied as prompt"
           : state === "failed"
             ? "Copy failed"
-            : "Copy code to clipboard"
+            : "Copy as AI prompt"
       }
     >
       {state === "copied" ? (
@@ -42,8 +50,8 @@ export function CopyButton({ code }: { code: string }) {
         </>
       ) : (
         <>
-          <Copy className="h-4 w-4" />
-          Copy
+          <Sparkles className="h-4 w-4" />
+          Copy as Prompt
         </>
       )}
     </button>

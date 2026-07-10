@@ -1,0 +1,276 @@
+---
+title: "Retry Decorator with Backoff"
+description: "Configurable retry decorator with exponential backoff, jitter, and exception filtering for resilient Python applications."
+category: "Python"
+language: "python"
+tags: ["python", "decorator", "retry", "exponential-backoff", "resilience", "production-ready"]
+createdAt: "2024-11-25"
+updatedAt: "2025-01-06"
+---
+
+export const codeBlocks = {
+  main: `import time
+import random
+import functools
+import logging
+from typing import Callable, Type
+
+logger = logging.getLogger(__name__)
+
+
+def retry(
+    max_attempts: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+    exponential_base: float = 2.0,
+    jitter: bool = True,
+    exceptions: tuple[Type[Exception], ...] = (Exception,),
+    on_retry: Callable[[Exception, int], None] | None = None,
+):
+    """
+    Retry decorator with exponential backoff and optional jitter.
+
+    Args:
+        max_attempts: Maximum number of attempts (including the first call).
+        base_delay: Initial delay between retries in seconds.
+        max_delay: Maximum delay cap in seconds.
+        exponential_base: Base for exponential backoff calculation.
+        jitter: Whether to add random jitter to prevent thundering herd.
+        exceptions: Tuple of exception types that trigger a retry.
+        on_retry: Optional callback invoked on each retry with (exception, attempt).
+    """
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception: Exception | None = None
+
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    last_exception = e
+
+                    if attempt == max_attempts:
+                        logger.error(
+                            f"{func.__name__} failed after {max_attempts} attempts: {e}"
+                        )
+                        raise
+
+                    delay = min(
+                        base_delay * (exponential_base ** (attempt - 1)),
+                        max_delay,
+                    )
+
+                    if jitter:
+                        delay = delay * (0.5 + random.random())
+
+                    logger.warning(
+                        f"{func.__name__} attempt {attempt}/{max_attempts} "
+                        f"failed: {e}. Retrying in {delay:.2f}s..."
+                    )
+
+                    if on_retry:
+                        on_retry(e, attempt)
+
+                    time.sleep(delay)
+
+            raise last_exception or RuntimeError("Retry logic error")
+
+        return wrapper
+    return decorator`,
+  test: `import pytest
+from unittest.mock import patch, MagicMock
+from retry_decorator import retry
+
+
+class TestRetryDecorator:
+    def test_succeeds_on_first_attempt(self):
+        call_count = 0
+
+        @retry(max_attempts=3)
+        def always_works():
+            nonlocal call_count
+            call_count += 1
+            return "success"
+
+        result = always_works()
+        assert result == "success"
+        assert call_count == 1
+
+    def test_retries_on_failure_then_succeeds(self):
+        call_count = 0
+
+        @retry(max_attempts=3, base_delay=0.01)
+        def fails_twice():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise ConnectionError("temporary failure")
+            return "recovered"
+
+        result = fails_twice()
+        assert result == "recovered"
+        assert call_count == 3
+
+    def test_raises_after_max_attempts(self):
+        @retry(max_attempts=2, base_delay=0.01)
+        def always_fails():
+            raise ValueError("permanent failure")
+
+        with pytest.raises(ValueError, match="permanent failure"):
+            always_fails()
+
+    def test_only_retries_specified_exceptions(self):
+        @retry(max_attempts=3, base_delay=0.01, exceptions=(ConnectionError,))
+        def raises_type_error():
+            raise TypeError("not retryable")
+
+        with pytest.raises(TypeError):
+            raises_type_error()
+
+    @patch("time.sleep")
+    def test_exponential_backoff(self, mock_sleep):
+        call_count = 0
+
+        @retry(max_attempts=4, base_delay=1.0, jitter=False)
+        def fails_thrice():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 4:
+                raise ConnectionError("fail")
+            return "ok"
+
+        fails_thrice()
+        delays = [call[0][0] for call in mock_sleep.call_args_list]
+        assert delays == [1.0, 2.0, 4.0]
+
+    def test_on_retry_callback(self):
+        callback = MagicMock()
+
+        @retry(max_attempts=3, base_delay=0.01, on_retry=callback)
+        def fails_once():
+            if callback.call_count == 0:
+                raise RuntimeError("oops")
+            return "ok"
+
+        fails_once()
+        assert callback.call_count == 1`,
+};
+
+## Overview
+
+A production retry decorator that implements exponential backoff with optional jitter. This is essential for any code that calls external services, as transient failures (network timeouts, rate limits, temporary unavailability) are inevitable in distributed systems.
+
+Key design decisions:
+- **Jitter** prevents multiple clients from retrying at the same time (thundering herd problem)
+- **Exception filtering** ensures you only retry on transient errors, not on permanent failures like validation errors
+- **Max delay cap** prevents unreasonably long waits during extended outages
+- **Callback hook** enables custom telemetry or alerting on retries
+
+## Code
+
+```python
+import time
+import random
+import functools
+import logging
+from typing import Callable, Type
+
+logger = logging.getLogger(__name__)
+
+
+def retry(
+    max_attempts: int = 3,
+    base_delay: float = 1.0,
+    max_delay: float = 60.0,
+    exponential_base: float = 2.0,
+    jitter: bool = True,
+    exceptions: tuple[Type[Exception], ...] = (Exception,),
+    on_retry: Callable[[Exception, int], None] | None = None,
+):
+    """Retry decorator with exponential backoff and optional jitter."""
+
+    def decorator(func):
+        @functools.wraps(func)
+        def wrapper(*args, **kwargs):
+            last_exception: Exception | None = None
+
+            for attempt in range(1, max_attempts + 1):
+                try:
+                    return func(*args, **kwargs)
+                except exceptions as e:
+                    last_exception = e
+                    if attempt == max_attempts:
+                        logger.error(f"{func.__name__} failed after {max_attempts} attempts: {e}")
+                        raise
+
+                    delay = min(base_delay * (exponential_base ** (attempt - 1)), max_delay)
+                    if jitter:
+                        delay = delay * (0.5 + random.random())
+
+                    logger.warning(f"{func.__name__} attempt {attempt}/{max_attempts} failed. Retrying in {delay:.2f}s...")
+                    if on_retry:
+                        on_retry(e, attempt)
+                    time.sleep(delay)
+
+            raise last_exception or RuntimeError("Retry logic error")
+        return wrapper
+    return decorator
+```
+
+## Test
+
+```python
+import pytest
+from unittest.mock import patch, MagicMock
+from retry_decorator import retry
+
+
+class TestRetryDecorator:
+    def test_succeeds_on_first_attempt(self):
+        call_count = 0
+
+        @retry(max_attempts=3)
+        def always_works():
+            nonlocal call_count
+            call_count += 1
+            return "success"
+
+        result = always_works()
+        assert result == "success"
+        assert call_count == 1
+
+    def test_retries_then_succeeds(self):
+        call_count = 0
+
+        @retry(max_attempts=3, base_delay=0.01)
+        def fails_twice():
+            nonlocal call_count
+            call_count += 1
+            if call_count < 3:
+                raise ConnectionError("temporary failure")
+            return "recovered"
+
+        result = fails_twice()
+        assert result == "recovered"
+        assert call_count == 3
+
+    def test_raises_after_max_attempts(self):
+        @retry(max_attempts=2, base_delay=0.01)
+        def always_fails():
+            raise ValueError("permanent failure")
+
+        with pytest.raises(ValueError, match="permanent failure"):
+            always_fails()
+```
+
+## Notes
+
+- For async functions, create an `async_retry` variant that uses `asyncio.sleep` instead of `time.sleep`
+- Common exception tuples: `(ConnectionError, TimeoutError)` for network calls, `(IOError,)` for file operations
+- Set `jitter=False` only in tests where you need predictable timing
+- The `on_retry` callback is useful for incrementing metrics counters or sending alerts
+- Consider adding `retry_if` parameter that accepts a predicate function for more complex retry conditions
+- For HTTP clients, also check the response status code (e.g., retry on 429, 502, 503)
+

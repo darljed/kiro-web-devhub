@@ -1,0 +1,28 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Add OG image generation for snippet pages and expand the snippet library to 12+ production-quality snippets across Splunk, React/Next.js, Python, and Bash/DevOps categories.",
+  "status": "completed",
+  "steps": [
+    "Create app/snippets/[id]/opengraph-image.tsx following the Next.js OG image file convention from node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/01-metadata/opengraph-image.md. Use ImageResponse from next/og. Generate a 1200x630 image with the snippet title, category badge, and language indicator. Style with a dark gradient background. Use process.cwd() to load a font file if desired, or use system fonts. Export alt, size, and contentType constants.",
+    "Update app/snippets/[id]/page.tsx generateMetadata to include comprehensive metadata: title, description, openGraph fields (title, description, type: article), twitter card meta (card: summary_large_image).",
+    "Create 8 new MDX snippet files in content/snippets/ to reach 12+ total (4 existing + 8 new). Each must have proper frontmatter and meaningful prose content (explanation, caveats, related links). Use multi-tab CodeTabs where appropriate (e.g., show test file alongside implementation). The new snippets: (1) splunk-latency-percentiles.mdx - SPL for latency percentile analysis, (2) splunk-deployment-tracking.mdx - SPL for deployment event correlation, (3) react-optimistic-ui.mdx - React 19 useOptimistic pattern with form, (4) nextjs-server-action-form.mdx - Next.js server action with validation, (5) python-async-api-client.mdx - aiohttp-based async client with retry, (6) python-retry-decorator.mdx - configurable retry decorator with exponential backoff, (7) bash-docker-healthcheck.mdx - Docker healthcheck script with multiple checks, (8) bash-git-hook-setup.mdx - pre-commit hook installer script.",
+    "Ensure each new MDX snippet has appropriate tags (e.g., production-ready, react-19, splunk-cloud, async, devops, docker, git).",
+    "Run npm run build to verify all 12+ snippet pages generate statically and OG images are produced."
+  ],
+  "acceptance_criteria": [
+    "npm run build succeeds with 12+ snippet routes listed in the build output",
+    "npm run lint passes with no errors",
+    "OG image route generates at build time for each snippet page",
+    "Each new snippet has meaningful frontmatter (title, description, category, language, tags, dates)",
+    "Each new snippet has prose content (not just a code block) with explanation and context",
+    "At least one snippet uses multi-tab CodeTabs to show code + test or code + usage",
+    "Tags are diverse and relevant (production-ready, react-19, splunk-cloud, async, devops, docker, git, etc.)"
+  ],
+  "verification": [
+    "npm run build - confirm 12+ snippet routes plus OG image routes in build output",
+    "npm run lint - confirm no lint errors"
+  ],
+  "blocked_reason": null,
+  "findings": "1. Bash scripts in codeBlocks template literals require escaping ${...} as \\${...} to prevent JavaScript template literal interpolation. Plain $variable references (without braces) are fine. 2. Adding generateStaticParams export to opengraph-image.tsx is needed for static OG image generation at build time. Without it, the route renders dynamically. 3. The metadataBase warning is non-critical - it defaults to http://localhost:3000 for resolving relative OG image URLs. 4. Build produces 29 static pages total: 12 snippet pages + 12 OG images + home + not-found + snippets index + 2 others."
+}
