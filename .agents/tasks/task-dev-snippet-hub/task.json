@@ -1,0 +1,7 @@
+{
+  "task_id": "task-dev-snippet-hub",
+  "task_description": "Build a static Next.js App Router web application serving as a Dev Snippet & Content Hub with portfolio page, snippet vault with search/filter, copy-to-clipboard, and dark mode toggle. Data sourced from local TypeScript file. All pages statically generated.",
+  "status": "in_progress",
+  "feature_order": ["FEAT-001", "FEAT-002"],
+  "blocked_reason": null
+}

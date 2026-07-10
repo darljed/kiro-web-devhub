@@ -1,0 +1,38 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Build the full application UI: shared layout with navigation and theme toggle, home/portfolio page, snippets index page with client-side search, and snippet detail page with copy-to-clipboard functionality.",
+  "status": "completed",
+  "steps": [
+    "Create components/ThemeProvider.tsx - a client component wrapping next-themes ThemeProvider that wraps children with attribute='class' and defaultTheme='system'",
+    "Create components/Navbar.tsx - a client component with responsive navigation (Home, Snippets links) and a theme toggle button using lucide-react Sun/Moon icons. Use semantic HTML <nav> with <header> wrapper. Include responsive design with mobile-friendly layout.",
+    "Create components/Footer.tsx - a simple footer with semantic <footer> element, copyright info, and links. Responsive Tailwind utilities.",
+    "Update app/layout.tsx - wrap children with ThemeProvider, include Navbar at top and Footer at bottom. Update metadata title to 'Darl Jed | Dev Hub' and description. Use semantic HTML structure with proper landmark elements.",
+    "Rewrite app/page.tsx as the portfolio/home page - create a hero section with developer name (Darl Jed Matundan), title (Full-Stack Developer), brief description, and a CTA link to /snippets. Use semantic HTML (main, section, h1). Responsive design with Tailwind.",
+    "Create app/snippets/page.tsx - Server Component that imports snippets from lib/data.ts, renders a heading and passes data to a client SnippetSearch component",
+    "Create components/SnippetSearch.tsx - a 'use client' component that receives snippets array as prop, provides a search input that filters by title and category fields with < 50ms response (simple .filter()), and renders a responsive grid of snippet cards linking to /snippets/[id]",
+    "Create app/snippets/[id]/page.tsx - a Server Component with generateStaticParams() that returns all snippet ids from lib/data.ts. The page awaits params (Promise), looks up the snippet, and renders title, category badge, description, and the code block",
+    "Create components/CopyButton.tsx - a 'use client' component that takes a code string prop, copies to clipboard on click using navigator.clipboard.writeText, shows 'Copied!' confirmation for 2 seconds using useState/useEffect, uses lucide-react Copy/Check icons",
+    "Set dynamicParams = false in app/snippets/[id]/page.tsx so only valid snippet IDs are served (404 for others)",
+    "Ensure all pages use semantic HTML elements: <main>, <section>, <article>, <header>, <footer>, <nav> as appropriate"
+  ],
+  "acceptance_criteria": [
+    "Navigation bar renders on all pages with Home and Snippets links plus a working theme toggle",
+    "Theme toggle switches between light and dark modes using class-based Tailwind dark: utilities",
+    "Home page displays portfolio information with semantic HTML and responsive layout",
+    "/snippets page shows all 4 snippets in a filterable grid",
+    "Search input filters snippets by title and category without page reload",
+    "/snippets/[id] pages are statically generated for all 4 snippets",
+    "Copy to Clipboard button copies code and shows 'Copied!' for 2 seconds",
+    "All pages use responsive Tailwind CSS utility classes",
+    "All layout sections use semantic HTML elements",
+    "npm run build shows all routes as statically generated (circle symbol)",
+    "npm run lint passes with no errors"
+  ],
+  "verification": [
+    "npm run lint",
+    "npm run build"
+  ],
+  "blocked_reason": null,
+  "findings": "All UI components implemented and verified. Build shows all routes as static (circle and SSG symbols). Lint passes cleanly. Next.js 16 Promise params pattern used correctly in dynamic route. Tailwind v4 dark: variant works with class-based dark mode via next-themes."
+}

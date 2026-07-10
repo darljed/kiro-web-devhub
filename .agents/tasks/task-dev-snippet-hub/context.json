@@ -1,0 +1,26 @@
+{
+  "project_type": "Next.js 16 App Router static web application (Dev Snippet & Content Hub)",
+  "language": "TypeScript with React 19",
+  "build_system": "npm with Next.js 16.2.4 (Turbopack). Node.js installed via mise (node@22). Must run `mise use node@22` or ensure mise shims are active before npm commands.",
+  "test_framework": "No test framework pre-installed. Will use npm run build + npm run lint as primary verification.",
+  "build_command": "cd /projects/sandbox/kiro-web-devhub && npm run build",
+  "test_command": "cd /projects/sandbox/kiro-web-devhub && npm run lint",
+  "verification_instructions": "1. Run `npm run lint` to check for ESLint errors. 2. Run `npm run build` to verify full static build with no errors. 3. Check that all routes are statically generated (shown in build output).",
+  "snapshot_or_generated_files": null,
+  "setup_instructions": "1. `mise use node@22` (already done, creates mise.toml). 2. `npm install` to install node_modules. 3. `npm run build` to verify baseline.",
+  "environment_constraints": "Node.js 22 installed via mise. GPG verification disabled (MISE_NODE_VERIFY=0). Full internet access (OPEN_INTERNET mode). No Docker needed for this static site.",
+  "contribution_requirements": "AGENTS.md warns: Next.js 16 has breaking changes from training data. params is a Promise (must await). Use App Router only. Tailwind CSS v4 uses CSS-first config (@import 'tailwindcss' in globals.css, @theme inline block). Steering file requires responsive Tailwind CSS utility classes and semantic HTML for all layout sections.",
+  "key_patterns": "Tailwind v4: config via CSS (@theme inline in globals.css), not tailwind.config.js. PostCSS uses @tailwindcss/postcss plugin. Layout uses Geist font variables. Dark mode via CSS custom properties (--background, --foreground) with @media (prefers-color-scheme: dark). Path alias: @/* maps to ./*. Dynamic routes: params is Promise, must use `await params`. generateStaticParams for static generation.",
+  "relevant_files": [
+    "app/layout.tsx",
+    "app/page.tsx",
+    "app/globals.css",
+    "postcss.config.mjs",
+    "next.config.ts",
+    "tsconfig.json",
+    "package.json",
+    "node_modules/next/dist/docs/01-app/03-api-reference/03-file-conventions/dynamic-routes.md",
+    "node_modules/next/dist/docs/01-app/03-api-reference/04-functions/generate-static-params.md"
+  ],
+  "directory_structure": "app/ - App Router pages and layouts. public/ - static assets (SVGs). Root config files: tsconfig.json, next.config.ts, postcss.config.mjs, eslint.config.mjs. Will create: lib/ for data, components/ for shared UI, app/snippets/ for snippet pages."
+}
