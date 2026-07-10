@@ -1,0 +1,413 @@
+---
+title: "Async Image Cache with LRU"
+description: "Actor-based async image downloading and caching system using URLSession, NSCache with LRU eviction, disk persistence, and memory pressure handling for iOS apps."
+category: "Swift"
+language: "swift"
+tags: ["swift", "ios", "caching", "async-await", "production-ready"]
+createdAt: "2024-12-05"
+updatedAt: "2025-01-13"
+---
+
+export const codeBlocks = {
+  main: `import UIKit
+
+/// Thread-safe async image cache with memory + disk layers
+actor ImageCache {
+    static let shared = ImageCache()
+
+    private let memoryCache = NSCache<NSString, UIImage>()
+    private let fileManager = FileManager.default
+    private let cacheDirectory: URL
+    private var activeTasks: [URL: Task<UIImage?, Never>] = [:]
+
+    // Configuration
+    private let maxMemoryCost: Int      // bytes
+    private let maxDiskSize: Int        // bytes
+    private let diskTTL: TimeInterval   // seconds
+
+    init(
+        maxMemoryMB: Int = 100,
+        maxDiskMB: Int = 500,
+        diskTTLHours: Int = 72
+    ) {
+        self.maxMemoryCost = maxMemoryMB * 1024 * 1024
+        self.maxDiskSize = maxDiskMB * 1024 * 1024
+        self.diskTTL = TimeInterval(diskTTLHours * 3600)
+
+        let paths = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)
+        self.cacheDirectory = paths[0].appendingPathComponent("ImageCache", isDirectory: true)
+
+        try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+
+        memoryCache.totalCostLimit = maxMemoryCost
+        memoryCache.countLimit = 200
+
+        // Listen for memory warnings
+        Task { @MainActor in
+            NotificationCenter.default.addObserver(
+                forName: UIApplication.didReceiveMemoryWarningNotification,
+                object: nil,
+                queue: .main
+            ) { [weak memoryCache] _ in
+                memoryCache?.removeAllObjects()
+            }
+        }
+    }
+
+    /// Fetch image from cache or download. Deduplicates concurrent requests.
+    func image(for url: URL, size: CGSize? = nil) async -> UIImage? {
+        let cacheKey = cacheKey(for: url, size: size)
+
+        // Check memory cache first
+        if let cached = memoryCache.object(forKey: cacheKey as NSString) {
+            return cached
+        }
+
+        // Check disk cache
+        if let diskImage = loadFromDisk(key: cacheKey) {
+            let cost = diskImage.jpegData(compressionQuality: 1.0)?.count ?? 0
+            memoryCache.setObject(diskImage, forKey: cacheKey as NSString, cost: cost)
+            return diskImage
+        }
+
+        // Deduplicate in-flight requests for the same URL
+        if let existingTask = activeTasks[url] {
+            return await existingTask.value
+        }
+
+        let task = Task<UIImage?, Never> {
+            guard let image = await download(url: url) else { return nil }
+
+            let finalImage: UIImage
+            if let size = size {
+                finalImage = image.resized(to: size)
+            } else {
+                finalImage = image
+            }
+
+            // Store in both caches
+            let cost = finalImage.jpegData(compressionQuality: 1.0)?.count ?? 0
+            memoryCache.setObject(finalImage, forKey: cacheKey as NSString, cost: cost)
+            saveToDisk(image: finalImage, key: cacheKey)
+
+            return finalImage
+        }
+
+        activeTasks[url] = task
+        let result = await task.value
+        activeTasks[url] = nil
+
+        return result
+    }
+
+    /// Prefetch images for upcoming content
+    func prefetch(urls: [URL]) {
+        for url in urls {
+            Task {
+                _ = await image(for: url)
+            }
+        }
+    }
+
+    /// Clear all caches
+    func clearAll() {
+        memoryCache.removeAllObjects()
+        try? fileManager.removeItem(at: cacheDirectory)
+        try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+    }
+
+    /// Remove expired disk entries
+    func pruneExpiredEntries() {
+        guard let files = try? fileManager.contentsOfDirectory(
+            at: cacheDirectory,
+            includingPropertiesForKeys: [.contentModificationDateKey, .fileSizeKey]
+        ) else { return }
+
+        let expirationDate = Date().addingTimeInterval(-diskTTL)
+
+        for fileURL in files {
+            guard let attributes = try? fileURL.resourceValues(forKeys: [.contentModificationDateKey]),
+                  let modDate = attributes.contentModificationDate,
+                  modDate < expirationDate else { continue }
+
+            try? fileManager.removeItem(at: fileURL)
+        }
+    }
+
+    // MARK: - Private Methods
+
+    private func download(url: URL) async -> UIImage? {
+        do {
+            let (data, response) = try await URLSession.shared.data(from: url)
+            guard let httpResponse = response as? HTTPURLResponse,
+                  (200...299).contains(httpResponse.statusCode),
+                  let image = UIImage(data: data) else {
+                return nil
+            }
+            return image
+        } catch {
+            return nil
+        }
+    }
+
+    private func cacheKey(for url: URL, size: CGSize?) -> String {
+        var key = url.absoluteString
+        if let size = size {
+            key += "_\\(Int(size.width))x\\(Int(size.height))"
+        }
+        return key.data(using: .utf8)!
+            .base64EncodedString()
+            .replacingOccurrences(of: "/", with: "_")
+    }
+
+    private func diskPath(for key: String) -> URL {
+        cacheDirectory.appendingPathComponent(key)
+    }
+
+    private func loadFromDisk(key: String) -> UIImage? {
+        let path = diskPath(for: key)
+        guard fileManager.fileExists(atPath: path.path),
+              let data = try? Data(contentsOf: path),
+              let image = UIImage(data: data) else {
+            return nil
+        }
+        // Check TTL
+        if let attrs = try? fileManager.attributesOfItem(atPath: path.path),
+           let modDate = attrs[.modificationDate] as? Date,
+           Date().timeIntervalSince(modDate) > diskTTL {
+            try? fileManager.removeItem(at: path)
+            return nil
+        }
+        return image
+    }
+
+    private func saveToDisk(image: UIImage, key: String) {
+        guard let data = image.jpegData(compressionQuality: 0.85) else { return }
+        let path = diskPath(for: key)
+        try? data.write(to: path, options: .atomic)
+    }
+}
+
+// MARK: - UIImage Extension
+
+extension UIImage {
+    func resized(to targetSize: CGSize) -> UIImage {
+        let renderer = UIGraphicsImageRenderer(size: targetSize)
+        return renderer.image { _ in
+            self.draw(in: CGRect(origin: .zero, size: targetSize))
+        }
+    }
+}`,
+  usage: `import SwiftUI
+
+// SwiftUI View using the image cache
+struct CachedAsyncImage: View {
+    let url: URL
+    let targetSize: CGSize?
+
+    @State private var image: UIImage?
+    @State private var isLoading = false
+
+    init(url: URL, size: CGSize? = nil) {
+        self.url = url
+        self.targetSize = size
+    }
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image)
+                    .resizable()
+                    .aspectRatio(contentMode: .fill)
+            } else if isLoading {
+                ProgressView()
+            } else {
+                Color.gray.opacity(0.2)
+            }
+        }
+        .task {
+            isLoading = true
+            image = await ImageCache.shared.image(for: url, size: targetSize)
+            isLoading = false
+        }
+    }
+}
+
+// Usage in a list
+struct ContentListView: View {
+    let items: [ContentItem]
+
+    var body: some View {
+        ScrollView {
+            LazyVStack(spacing: 16) {
+                ForEach(items) { item in
+                    HStack {
+                        CachedAsyncImage(
+                            url: item.thumbnailURL,
+                            size: CGSize(width: 80, height: 80)
+                        )
+                        .frame(width: 80, height: 80)
+                        .clipShape(RoundedRectangle(cornerRadius: 8))
+
+                        Text(item.title)
+                            .font(.headline)
+                    }
+                }
+            }
+        }
+        .task {
+            // Prefetch next batch of images
+            let urls = items.prefix(20).map(\\.thumbnailURL)
+            await ImageCache.shared.prefetch(urls: urls)
+        }
+    }
+}`,
+};
+
+## Overview
+
+An actor-based image caching system for iOS that provides thread-safe, two-tier caching (memory + disk) with async/await support. This eliminates common issues in image loading like redundant network requests, memory pressure crashes, and UI thread blocking.
+
+Key design decisions:
+- **Actor isolation** guarantees thread safety without manual lock management
+- **Request deduplication** via `activeTasks` dictionary prevents multiple downloads of the same image
+- **NSCache for memory layer** automatically evicts under memory pressure (LRU behavior built-in)
+- **Disk persistence with TTL** survives app restarts while preventing unbounded growth
+- **Image resizing before caching** reduces memory footprint for thumbnail use cases
+- **Memory warning handling** proactively clears the memory cache to prevent termination
+
+## Code
+
+```swift
+import UIKit
+
+actor ImageCache {
+    static let shared = ImageCache()
+
+    private let memoryCache = NSCache<NSString, UIImage>()
+    private let fileManager = FileManager.default
+    private let cacheDirectory: URL
+    private var activeTasks: [URL: Task<UIImage?, Never>] = [:]
+
+    private let maxMemoryCost: Int
+    private let maxDiskSize: Int
+    private let diskTTL: TimeInterval
+
+    init(maxMemoryMB: Int = 100, maxDiskMB: Int = 500, diskTTLHours: Int = 72) {
+        self.maxMemoryCost = maxMemoryMB * 1024 * 1024
+        self.maxDiskSize = maxDiskMB * 1024 * 1024
+        self.diskTTL = TimeInterval(diskTTLHours * 3600)
+
+        let paths = fileManager.urls(for: .cachesDirectory, in: .userDomainMask)
+        self.cacheDirectory = paths[0].appendingPathComponent("ImageCache", isDirectory: true)
+        try? fileManager.createDirectory(at: cacheDirectory, withIntermediateDirectories: true)
+
+        memoryCache.totalCostLimit = maxMemoryCost
+        memoryCache.countLimit = 200
+    }
+
+    func image(for url: URL, size: CGSize? = nil) async -> UIImage? {
+        let cacheKey = cacheKey(for: url, size: size)
+
+        if let cached = memoryCache.object(forKey: cacheKey as NSString) {
+            return cached
+        }
+
+        if let diskImage = loadFromDisk(key: cacheKey) {
+            let cost = diskImage.jpegData(compressionQuality: 1.0)?.count ?? 0
+            memoryCache.setObject(diskImage, forKey: cacheKey as NSString, cost: cost)
+            return diskImage
+        }
+
+        if let existingTask = activeTasks[url] {
+            return await existingTask.value
+        }
+
+        let task = Task<UIImage?, Never> {
+            guard let image = await download(url: url) else { return nil }
+            let finalImage = size.map { image.resized(to: $0) } ?? image
+            let cost = finalImage.jpegData(compressionQuality: 1.0)?.count ?? 0
+            memoryCache.setObject(finalImage, forKey: cacheKey as NSString, cost: cost)
+            saveToDisk(image: finalImage, key: cacheKey)
+            return finalImage
+        }
+
+        activeTasks[url] = task
+        let result = await task.value
+        activeTasks[url] = nil
+        return result
+    }
+
+    func prefetch(urls: [URL]) {
+        for url in urls { Task { _ = await image(for: url) } }
+    }
+
+    private func download(url: URL) async -> UIImage? {
+        guard let (data, response) = try? await URLSession.shared.data(from: url),
+              let http = response as? HTTPURLResponse,
+              (200...299).contains(http.statusCode) else { return nil }
+        return UIImage(data: data)
+    }
+
+    private func cacheKey(for url: URL, size: CGSize?) -> String {
+        var key = url.absoluteString
+        if let size { key += "_\(Int(size.width))x\(Int(size.height))" }
+        return key.data(using: .utf8)!.base64EncodedString().replacingOccurrences(of: "/", with: "_")
+    }
+
+    private func diskPath(for key: String) -> URL {
+        cacheDirectory.appendingPathComponent(key)
+    }
+
+    private func loadFromDisk(key: String) -> UIImage? {
+        let path = diskPath(for: key)
+        guard let data = try? Data(contentsOf: path) else { return nil }
+        return UIImage(data: data)
+    }
+
+    private func saveToDisk(image: UIImage, key: String) {
+        guard let data = image.jpegData(compressionQuality: 0.85) else { return }
+        try? data.write(to: diskPath(for: key), options: .atomic)
+    }
+}
+```
+
+## Usage
+
+```swift
+import SwiftUI
+
+struct CachedAsyncImage: View {
+    let url: URL
+    let targetSize: CGSize?
+    @State private var image: UIImage?
+    @State private var isLoading = false
+
+    var body: some View {
+        Group {
+            if let image {
+                Image(uiImage: image).resizable().aspectRatio(contentMode: .fill)
+            } else if isLoading {
+                ProgressView()
+            } else {
+                Color.gray.opacity(0.2)
+            }
+        }
+        .task {
+            isLoading = true
+            image = await ImageCache.shared.image(for: url, size: targetSize)
+            isLoading = false
+        }
+    }
+}
+```
+
+## Notes
+
+- `NSCache` automatically handles LRU eviction and responds to system memory pressure notifications
+- Actor isolation eliminates data races but introduces potential `await` suspension points; keep critical sections small
+- Use `jpegData(compressionQuality: 0.85)` for disk storage to balance quality vs. storage space
+- For progressive loading, consider storing low-resolution thumbnails with immediate display while full images download
+- Add ETags or `If-Modified-Since` headers for conditional fetching to reduce bandwidth
+- Consider `URLSession` background download tasks for large images that should survive app suspension
+- Pair with `LazyVStack` in SwiftUI to only load visible cells, reducing peak memory usage

@@ -1,0 +1,380 @@
+---
+title: "Zero-Downtime Rolling Deployment"
+description: "Complete K8s deployment manifest with readiness/liveness probes, pod disruption budget, rolling update strategy, and resource limits."
+category: "Kubernetes"
+language: "yaml"
+tags: ["kubernetes", "deployment", "zero-downtime", "containers", "production-ready"]
+createdAt: "2024-11-30"
+updatedAt: "2025-01-08"
+---
+
+export const codeBlocks = {
+  main: `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-api
+  namespace: production
+  labels:
+    app: web-api
+    version: v1
+  annotations:
+    deployment.kubernetes.io/revision: "1"
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: web-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0        # Never reduce below desired count
+      maxSurge: 1              # Add one pod at a time
+  template:
+    metadata:
+      labels:
+        app: web-api
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      terminationGracePeriodSeconds: 60
+      serviceAccountName: web-api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: web-api
+          image: registry.example.com/web-api:1.2.3
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          env:
+            - name: APP_ENV
+              value: "production"
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: web-api-secrets
+                  key: db-host
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: web-api-config
+                  key: log-level
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz/live
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /healthz/ready
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 5
+            failureThreshold: 12  # 60s max startup time
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 10"]
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: web-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web-api-pdb
+  namespace: production
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: web-api
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: web-api-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web-api
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120`,
+  usage: `# Deploy with kubectl
+kubectl apply -f deployment.yaml
+
+# Watch rollout progress
+kubectl rollout status deployment/web-api -n production
+
+# Rollback if something goes wrong
+kubectl rollout undo deployment/web-api -n production
+
+# View rollout history
+kubectl rollout history deployment/web-api -n production
+
+# Pause/resume a rollout for canary-style testing
+kubectl rollout pause deployment/web-api -n production
+kubectl rollout resume deployment/web-api -n production
+
+# Check pod disruption budget status
+kubectl get pdb web-api-pdb -n production -o yaml`,
+};
+
+## Overview
+
+A production-grade Kubernetes deployment configuration that ensures zero downtime during updates. This manifest combines rolling update strategy, health probes, pod disruption budgets, and horizontal autoscaling to maintain availability throughout deployments, node drains, and traffic spikes.
+
+Key design decisions:
+- **maxUnavailable: 0** ensures the old pod stays running until the new one passes readiness checks
+- **preStop hook** with a sleep gives the Service time to remove the pod from endpoints before termination
+- **Startup probe** separates slow-starting apps from unhealthy apps, preventing premature restarts
+- **Topology spread** distributes pods across availability zones for fault tolerance
+- **PodDisruptionBudget** protects against cluster operations taking down too many pods simultaneously
+
+## Code
+
+```yaml
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-api
+  namespace: production
+  labels:
+    app: web-api
+    version: v1
+  annotations:
+    deployment.kubernetes.io/revision: "1"
+spec:
+  replicas: 3
+  revisionHistoryLimit: 5
+  selector:
+    matchLabels:
+      app: web-api
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxUnavailable: 0        # Never reduce below desired count
+      maxSurge: 1              # Add one pod at a time
+  template:
+    metadata:
+      labels:
+        app: web-api
+        version: v1
+      annotations:
+        prometheus.io/scrape: "true"
+        prometheus.io/port: "9090"
+    spec:
+      terminationGracePeriodSeconds: 60
+      serviceAccountName: web-api
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 1000
+        fsGroup: 1000
+      containers:
+        - name: web-api
+          image: registry.example.com/web-api:1.2.3
+          imagePullPolicy: IfNotPresent
+          ports:
+            - name: http
+              containerPort: 8080
+              protocol: TCP
+            - name: metrics
+              containerPort: 9090
+              protocol: TCP
+          env:
+            - name: APP_ENV
+              value: "production"
+            - name: DB_HOST
+              valueFrom:
+                secretKeyRef:
+                  name: web-api-secrets
+                  key: db-host
+            - name: LOG_LEVEL
+              valueFrom:
+                configMapKeyRef:
+                  name: web-api-config
+                  key: log-level
+          resources:
+            requests:
+              cpu: 250m
+              memory: 256Mi
+            limits:
+              cpu: "1"
+              memory: 512Mi
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: http
+            initialDelaySeconds: 5
+            periodSeconds: 10
+            timeoutSeconds: 3
+            successThreshold: 1
+            failureThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /healthz/live
+              port: http
+            initialDelaySeconds: 15
+            periodSeconds: 20
+            timeoutSeconds: 5
+            failureThreshold: 3
+          startupProbe:
+            httpGet:
+              path: /healthz/ready
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 5
+            failureThreshold: 12  # 60s max startup time
+          lifecycle:
+            preStop:
+              exec:
+                command: ["/bin/sh", "-c", "sleep 10"]
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: web-api
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web-api-pdb
+  namespace: production
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: web-api
+---
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: web-api-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: web-api
+  minReplicas: 3
+  maxReplicas: 10
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 60
+      policies:
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Pods
+          value: 1
+          periodSeconds: 120
+```
+
+## Usage
+
+```yaml
+# Deploy with kubectl
+kubectl apply -f deployment.yaml
+
+# Watch rollout progress
+kubectl rollout status deployment/web-api -n production
+
+# Rollback if something goes wrong
+kubectl rollout undo deployment/web-api -n production
+
+# View rollout history
+kubectl rollout history deployment/web-api -n production
+
+# Pause/resume a rollout for canary-style testing
+kubectl rollout pause deployment/web-api -n production
+kubectl rollout resume deployment/web-api -n production
+```
+
+## Notes
+
+- Set `terminationGracePeriodSeconds` greater than your longest request timeout plus the preStop sleep
+- The preStop sleep (10s) must be shorter than `terminationGracePeriodSeconds` (60s) to allow graceful shutdown
+- Use `maxUnavailable: 0` with `maxSurge: 1` for safest rollouts; increase `maxSurge` for faster deployments
+- Separate liveness from readiness probes: liveness should only check "is the process alive", readiness should check dependencies
+- Set resource requests equal to limits for Guaranteed QoS class on critical workloads
+- The HPA `scaleDown` stabilization window (300s) prevents flapping during traffic fluctuations
+- Consider using `topologySpreadConstraints` over pod anti-affinity for more flexible scheduling

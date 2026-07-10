@@ -1,0 +1,384 @@
+---
+title: "Graceful HTTP Server Shutdown"
+description: "Go HTTP server with signal handling, graceful connection draining, and context-based timeout for zero-downtime deployments."
+category: "Go"
+language: "go"
+tags: ["go", "http", "graceful-shutdown", "signals", "production-ready"]
+createdAt: "2024-12-03"
+updatedAt: "2025-01-10"
+---
+
+export const codeBlocks = {
+  main: `package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"sync/atomic"
+	"syscall"
+	"time"
+)
+
+type Server struct {
+	httpServer      *http.Server
+	activeRequests  int64
+	shutdownTimeout time.Duration
+	healthy         int32
+}
+
+func NewServer(addr string, handler http.Handler, shutdownTimeout time.Duration) *Server {
+	s := &Server{
+		shutdownTimeout: shutdownTimeout,
+	}
+	atomic.StoreInt32(&s.healthy, 1)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.healthCheckHandler)
+	mux.Handle("/", s.trackingMiddleware(handler))
+
+	s.httpServer = &http.Server{
+		Addr:         addr,
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	return s
+}
+
+func (s *Server) healthCheckHandler(w http.ResponseWriter, r *http.Request) {
+	if atomic.LoadInt32(&s.healthy) == 1 {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "OK")
+		return
+	}
+	w.WriteHeader(http.StatusServiceUnavailable)
+	fmt.Fprintln(w, "shutting down")
+}
+
+func (s *Server) trackingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&s.activeRequests, 1)
+		defer atomic.AddInt64(&s.activeRequests, -1)
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) Start() error {
+	// Channel to listen for OS signals
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+
+	// Channel to listen for server errors
+	serverErr := make(chan error, 1)
+
+	go func() {
+		log.Printf("Server starting on %s", s.httpServer.Addr)
+		if err := s.httpServer.ListenAndServe(); err != http.ErrServerClosed {
+			serverErr <- err
+		}
+	}()
+
+	// Wait for interrupt signal or server error
+	select {
+	case sig := <-stop:
+		log.Printf("Received signal: %v. Starting graceful shutdown...", sig)
+	case err := <-serverErr:
+		return fmt.Errorf("server error: %w", err)
+	}
+
+	return s.shutdown()
+}
+
+func (s *Server) shutdown() error {
+	// Mark server as unhealthy so load balancer stops sending traffic
+	atomic.StoreInt32(&s.healthy, 0)
+
+	// Give load balancer time to detect health change
+	log.Println("Waiting for load balancer to detect shutdown...")
+	time.Sleep(5 * time.Second)
+
+	// Create shutdown context with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
+	defer cancel()
+
+	// Disable keep-alives for new connections
+	s.httpServer.SetKeepAlivesEnabled(false)
+
+	// Attempt graceful shutdown
+	if err := s.httpServer.Shutdown(ctx); err != nil {
+		return fmt.Errorf("graceful shutdown failed: %w. Active requests: %d",
+			err, atomic.LoadInt64(&s.activeRequests))
+	}
+
+	log.Printf("Server stopped gracefully. Final active requests: %d",
+		atomic.LoadInt64(&s.activeRequests))
+	return nil
+}
+
+func main() {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Simulate work
+		time.Sleep(2 * time.Second)
+		fmt.Fprintln(w, "Hello, World!")
+	})
+
+	server := NewServer(":8080", handler, 30*time.Second)
+	if err := server.Start(); err != nil {
+		log.Fatalf("Server failed: %v", err)
+	}
+}`,
+  test: `package main
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func TestHealthCheck(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	server := NewServer(":0", handler, 5*time.Second)
+
+	// Test healthy state
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	w := httptest.NewRecorder()
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	// Simulate shutdown
+	atomic.StoreInt32(&server.healthy, 0)
+	w = httptest.NewRecorder()
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", w.Code)
+	}
+}
+
+func TestActiveRequestTracking(t *testing.T) {
+	done := make(chan struct{})
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-done
+	})
+	server := NewServer(":0", handler, 5*time.Second)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	go server.httpServer.Handler.ServeHTTP(w, req)
+	time.Sleep(50 * time.Millisecond)
+
+	active := atomic.LoadInt64(&server.activeRequests)
+	if active != 1 {
+		t.Errorf("expected 1 active request, got %d", active)
+	}
+
+	close(done)
+	time.Sleep(50 * time.Millisecond)
+
+	active = atomic.LoadInt64(&server.activeRequests)
+	if active != 0 {
+		t.Errorf("expected 0 active requests, got %d", active)
+	}
+}`,
+};
+
+## Overview
+
+A production-ready Go HTTP server that handles shutdown gracefully, ensuring all in-flight requests complete before the process exits. This is critical for zero-downtime deployments in containerized environments where orchestrators (Kubernetes, ECS) send SIGTERM before stopping a pod.
+
+Key design decisions:
+- **Signal handling** captures SIGINT and SIGTERM for clean shutdown
+- **Health endpoint** returns 503 during shutdown so load balancers stop sending traffic
+- **Request tracking** uses atomic counters to monitor active connections
+- **Configurable timeout** prevents indefinite hangs from stuck connections
+- **Keep-alive disabling** ensures no new requests arrive on existing connections
+
+## Code
+
+```go
+package main
+
+import (
+	"context"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"sync/atomic"
+	"syscall"
+	"time"
+)
+
+type Server struct {
+	httpServer      *http.Server
+	activeRequests  int64
+	shutdownTimeout time.Duration
+	healthy         int32
+}
+
+func NewServer(addr string, handler http.Handler, shutdownTimeout time.Duration) *Server {
+	s := &Server{
+		shutdownTimeout: shutdownTimeout,
+	}
+	atomic.StoreInt32(&s.healthy, 1)
+
+	mux := http.NewServeMux()
+	mux.HandleFunc("/healthz", s.healthCheckHandler)
+	mux.Handle("/", s.trackingMiddleware(handler))
+
+	s.httpServer = &http.Server{
+		Addr:         addr,
+		Handler:      mux,
+		ReadTimeout:  5 * time.Second,
+		WriteTimeout: 10 * time.Second,
+		IdleTimeout:  120 * time.Second,
+	}
+
+	return s
+}
+
+func (s *Server) healthCheckHandler(w http.ResponseWriter, r *http.Request) {
+	if atomic.LoadInt32(&s.healthy) == 1 {
+		w.WriteHeader(http.StatusOK)
+		fmt.Fprintln(w, "OK")
+		return
+	}
+	w.WriteHeader(http.StatusServiceUnavailable)
+	fmt.Fprintln(w, "shutting down")
+}
+
+func (s *Server) trackingMiddleware(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		atomic.AddInt64(&s.activeRequests, 1)
+		defer atomic.AddInt64(&s.activeRequests, -1)
+		next.ServeHTTP(w, r)
+	})
+}
+
+func (s *Server) Start() error {
+	stop := make(chan os.Signal, 1)
+	signal.Notify(stop, syscall.SIGINT, syscall.SIGTERM)
+
+	serverErr := make(chan error, 1)
+
+	go func() {
+		log.Printf("Server starting on %s", s.httpServer.Addr)
+		if err := s.httpServer.ListenAndServe(); err != http.ErrServerClosed {
+			serverErr <- err
+		}
+	}()
+
+	select {
+	case sig := <-stop:
+		log.Printf("Received signal: %v. Starting graceful shutdown...", sig)
+	case err := <-serverErr:
+		return fmt.Errorf("server error: %w", err)
+	}
+
+	return s.shutdown()
+}
+
+func (s *Server) shutdown() error {
+	atomic.StoreInt32(&s.healthy, 0)
+	log.Println("Waiting for load balancer to detect shutdown...")
+	time.Sleep(5 * time.Second)
+
+	ctx, cancel := context.WithTimeout(context.Background(), s.shutdownTimeout)
+	defer cancel()
+
+	s.httpServer.SetKeepAlivesEnabled(false)
+
+	if err := s.httpServer.Shutdown(ctx); err != nil {
+		return fmt.Errorf("graceful shutdown failed: %w. Active requests: %d",
+			err, atomic.LoadInt64(&s.activeRequests))
+	}
+
+	log.Printf("Server stopped gracefully. Final active requests: %d",
+		atomic.LoadInt64(&s.activeRequests))
+	return nil
+}
+```
+
+## Test
+
+```go
+package main
+
+import (
+	"net/http"
+	"net/http/httptest"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+func TestHealthCheck(t *testing.T) {
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {})
+	server := NewServer(":0", handler, 5*time.Second)
+
+	req := httptest.NewRequest("GET", "/healthz", nil)
+	w := httptest.NewRecorder()
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusOK {
+		t.Errorf("expected 200, got %d", w.Code)
+	}
+
+	atomic.StoreInt32(&server.healthy, 0)
+	w = httptest.NewRecorder()
+	server.httpServer.Handler.ServeHTTP(w, req)
+
+	if w.Code != http.StatusServiceUnavailable {
+		t.Errorf("expected 503, got %d", w.Code)
+	}
+}
+
+func TestActiveRequestTracking(t *testing.T) {
+	done := make(chan struct{})
+	handler := http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-done
+	})
+	server := NewServer(":0", handler, 5*time.Second)
+
+	req := httptest.NewRequest("GET", "/test", nil)
+	w := httptest.NewRecorder()
+
+	go server.httpServer.Handler.ServeHTTP(w, req)
+	time.Sleep(50 * time.Millisecond)
+
+	active := atomic.LoadInt64(&server.activeRequests)
+	if active != 1 {
+		t.Errorf("expected 1 active request, got %d", active)
+	}
+
+	close(done)
+	time.Sleep(50 * time.Millisecond)
+
+	active = atomic.LoadInt64(&server.activeRequests)
+	if active != 0 {
+		t.Errorf("expected 0 active requests, got %d", active)
+	}
+}
+```
+
+## Notes
+
+- Adjust the 5-second load balancer detection delay based on your infrastructure (AWS ALB needs ~10s, Kubernetes needs 1 pod deregistration cycle)
+- The `IdleTimeout` of 120s matches common load balancer defaults; align with your LB configuration
+- For HTTP/2, the server automatically sends GOAWAY frames during shutdown
+- Consider adding a `/readyz` endpoint separate from `/healthz` for startup vs runtime health
+- In Kubernetes, set `terminationGracePeriodSeconds` to be longer than your `shutdownTimeout`
+- Use `httpServer.RegisterOnShutdown()` to close WebSocket connections or database pools

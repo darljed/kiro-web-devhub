@@ -1,0 +1,339 @@
+---
+title: "Fuzzy Multi-Field Search"
+description: "Elasticsearch query DSL for fuzzy full-text search across multiple fields with boosting, highlighting, suggestions, and custom analyzers."
+category: "Elasticsearch"
+language: "json"
+tags: ["elasticsearch", "search", "full-text", "fuzzy-matching", "production-ready"]
+createdAt: "2024-12-12"
+updatedAt: "2025-01-09"
+---
+
+export const codeBlocks = {
+  main: `{
+  "settings": {
+    "number_of_shards": 2,
+    "number_of_replicas": 1,
+    "analysis": {
+      "analyzer": {
+        "custom_search_analyzer": {
+          "type": "custom",
+          "tokenizer": "standard",
+          "filter": [
+            "lowercase",
+            "asciifolding",
+            "synonym_filter",
+            "edge_ngram_filter"
+          ]
+        },
+        "custom_index_analyzer": {
+          "type": "custom",
+          "tokenizer": "standard",
+          "filter": [
+            "lowercase",
+            "asciifolding",
+            "word_delimiter_graph"
+          ]
+        }
+      },
+      "filter": {
+        "synonym_filter": {
+          "type": "synonym",
+          "synonyms": [
+            "js, javascript",
+            "ts, typescript",
+            "react, reactjs",
+            "k8s, kubernetes"
+          ]
+        },
+        "edge_ngram_filter": {
+          "type": "edge_ngram",
+          "min_gram": 2,
+          "max_gram": 15
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "title": {
+        "type": "text",
+        "analyzer": "custom_index_analyzer",
+        "search_analyzer": "custom_search_analyzer",
+        "fields": {
+          "exact": { "type": "keyword" },
+          "suggest": { "type": "completion" }
+        }
+      },
+      "description": {
+        "type": "text",
+        "analyzer": "custom_index_analyzer"
+      },
+      "content": {
+        "type": "text",
+        "analyzer": "custom_index_analyzer"
+      },
+      "tags": {
+        "type": "keyword",
+        "fields": {
+          "text": { "type": "text" }
+        }
+      },
+      "category": { "type": "keyword" },
+      "author": {
+        "type": "text",
+        "fields": { "keyword": { "type": "keyword" } }
+      },
+      "created_at": { "type": "date" },
+      "popularity_score": { "type": "float" }
+    }
+  }
+}`,
+  usage: `// Fuzzy multi-field search query with boosting and highlighting
+{
+  "query": {
+    "bool": {
+      "must": [
+        {
+          "multi_match": {
+            "query": "kuberntes deploymnt",
+            "type": "best_fields",
+            "fields": [
+              "title^3",
+              "description^2",
+              "content",
+              "tags.text^2.5"
+            ],
+            "fuzziness": "AUTO",
+            "prefix_length": 2,
+            "max_expansions": 50,
+            "minimum_should_match": "75%"
+          }
+        }
+      ],
+      "should": [
+        {
+          "match_phrase": {
+            "title": {
+              "query": "kuberntes deploymnt",
+              "boost": 5,
+              "slop": 2
+            }
+          }
+        },
+        {
+          "term": {
+            "tags": {
+              "value": "production-ready",
+              "boost": 1.5
+            }
+          }
+        },
+        {
+          "rank_feature": {
+            "field": "popularity_score",
+            "boost": 0.5
+          }
+        }
+      ],
+      "filter": [
+        {
+          "range": {
+            "created_at": {
+              "gte": "now-1y"
+            }
+          }
+        }
+      ]
+    }
+  },
+  "highlight": {
+    "pre_tags": ["<mark>"],
+    "post_tags": ["</mark>"],
+    "fields": {
+      "title": { "number_of_fragments": 0 },
+      "description": { "fragment_size": 150, "number_of_fragments": 3 },
+      "content": { "fragment_size": 200, "number_of_fragments": 5 }
+    }
+  },
+  "suggest": {
+    "title_suggest": {
+      "prefix": "kubern",
+      "completion": {
+        "field": "title.suggest",
+        "size": 5,
+        "fuzzy": {
+          "fuzziness": "AUTO"
+        }
+      }
+    },
+    "did_you_mean": {
+      "text": "kuberntes deploymnt",
+      "phrase": {
+        "field": "title",
+        "size": 3,
+        "gram_size": 3,
+        "direct_generator": [
+          {
+            "field": "title",
+            "suggest_mode": "popular"
+          }
+        ],
+        "highlight": {
+          "pre_tag": "<em>",
+          "post_tag": "</em>"
+        }
+      }
+    }
+  },
+  "aggs": {
+    "by_category": {
+      "terms": {
+        "field": "category",
+        "size": 10
+      }
+    },
+    "by_tags": {
+      "terms": {
+        "field": "tags",
+        "size": 20
+      }
+    }
+  },
+  "size": 20,
+  "from": 0,
+  "_source": ["title", "description", "category", "tags", "created_at"],
+  "sort": [
+    "_score",
+    { "created_at": { "order": "desc" } }
+  ]
+}`,
+};
+
+## Overview
+
+A comprehensive Elasticsearch configuration for implementing fuzzy full-text search with typo tolerance, field boosting, autocomplete suggestions, and faceted navigation. This setup handles real-world search challenges like misspellings, synonyms, and relevance tuning across multiple content fields.
+
+Key design decisions:
+- **Fuzziness: AUTO** adjusts edit distance based on term length (0 for 1-2 chars, 1 for 3-5, 2 for 6+)
+- **Field boosting** prioritizes title matches over body content for better relevance
+- **Edge n-grams** enable prefix matching for type-ahead/autocomplete functionality
+- **Synonyms** expand queries to match related terms without requiring exact matches
+- **Phrase matching with slop** rewards results where search terms appear close together
+- **Completion suggester** provides fast autocomplete with fuzzy tolerance
+
+## Code
+
+```json
+{
+  "settings": {
+    "number_of_shards": 2,
+    "number_of_replicas": 1,
+    "analysis": {
+      "analyzer": {
+        "custom_search_analyzer": {
+          "type": "custom",
+          "tokenizer": "standard",
+          "filter": ["lowercase", "asciifolding", "synonym_filter", "edge_ngram_filter"]
+        },
+        "custom_index_analyzer": {
+          "type": "custom",
+          "tokenizer": "standard",
+          "filter": ["lowercase", "asciifolding", "word_delimiter_graph"]
+        }
+      },
+      "filter": {
+        "synonym_filter": {
+          "type": "synonym",
+          "synonyms": ["js, javascript", "ts, typescript", "k8s, kubernetes"]
+        },
+        "edge_ngram_filter": {
+          "type": "edge_ngram",
+          "min_gram": 2,
+          "max_gram": 15
+        }
+      }
+    }
+  },
+  "mappings": {
+    "properties": {
+      "title": {
+        "type": "text",
+        "analyzer": "custom_index_analyzer",
+        "search_analyzer": "custom_search_analyzer",
+        "fields": {
+          "exact": { "type": "keyword" },
+          "suggest": { "type": "completion" }
+        }
+      },
+      "description": { "type": "text", "analyzer": "custom_index_analyzer" },
+      "content": { "type": "text", "analyzer": "custom_index_analyzer" },
+      "tags": {
+        "type": "keyword",
+        "fields": { "text": { "type": "text" } }
+      },
+      "category": { "type": "keyword" },
+      "created_at": { "type": "date" },
+      "popularity_score": { "type": "float" }
+    }
+  }
+}
+```
+
+## Usage
+
+```json
+{
+  "query": {
+    "bool": {
+      "must": [{
+        "multi_match": {
+          "query": "kuberntes deploymnt",
+          "type": "best_fields",
+          "fields": ["title^3", "description^2", "content", "tags.text^2.5"],
+          "fuzziness": "AUTO",
+          "prefix_length": 2,
+          "max_expansions": 50,
+          "minimum_should_match": "75%"
+        }
+      }],
+      "should": [
+        { "match_phrase": { "title": { "query": "kuberntes deploymnt", "boost": 5, "slop": 2 } } },
+        { "term": { "tags": { "value": "production-ready", "boost": 1.5 } } }
+      ],
+      "filter": [
+        { "range": { "created_at": { "gte": "now-1y" } } }
+      ]
+    }
+  },
+  "highlight": {
+    "pre_tags": ["<mark>"],
+    "post_tags": ["</mark>"],
+    "fields": {
+      "title": { "number_of_fragments": 0 },
+      "description": { "fragment_size": 150, "number_of_fragments": 3 }
+    }
+  },
+  "suggest": {
+    "did_you_mean": {
+      "text": "kuberntes deploymnt",
+      "phrase": {
+        "field": "title",
+        "size": 3,
+        "direct_generator": [{ "field": "title", "suggest_mode": "popular" }]
+      }
+    }
+  },
+  "size": 20,
+  "from": 0
+}
+```
+
+## Notes
+
+- Set `prefix_length: 2` to avoid expensive fuzzy expansions on the first characters of every term
+- Use `search_analyzer` (with synonyms) separately from `index_analyzer` to keep the index lean
+- The `completion` field type is stored in an FST (finite state transducer) for sub-millisecond autocomplete
+- Consider `function_score` for more sophisticated relevance tuning (recency decay, popularity boosting)
+- Edge n-gram filters expand index size; monitor shard size and consider using `search_as_you_type` field type as an alternative
+- Always use `filter` context for non-scoring clauses (dates, categories) to leverage query caching
+- For multilingual content, use language-specific analyzers per field with `multi-fields` mapping

@@ -1,0 +1,361 @@
+---
+title: "Monorepo Path-Filtered CI"
+description: "GitHub Actions workflow with path-based filtering, matrix strategy for affected packages, dependency caching, and conditional deployment steps."
+category: "GitHub Actions"
+language: "yaml"
+tags: ["github-actions", "ci-cd", "monorepo", "automation", "production-ready"]
+createdAt: "2024-12-20"
+updatedAt: "2025-01-15"
+---
+
+export const codeBlocks = {
+  main: `name: Monorepo CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+  packages: write
+
+concurrency:
+  group: \${{ github.workflow }}-\${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      packages: \${{ steps.filter.outputs.changes }}
+      api-changed: \${{ steps.filter.outputs.api }}
+      web-changed: \${{ steps.filter.outputs.web }}
+      shared-changed: \${{ steps.filter.outputs.shared }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            api:
+              - 'packages/api/**'
+              - 'packages/shared/**'
+            web:
+              - 'packages/web/**'
+              - 'packages/shared/**'
+            shared:
+              - 'packages/shared/**'
+
+  lint-and-typecheck:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.packages != '[]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - run: npm ci
+      - run: npx turbo lint typecheck --filter='...[origin/main]'
+
+  test:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.packages != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: \${{ fromJson(needs.detect-changes.outputs.packages) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - run: npm ci
+
+      - name: Run tests for \${{ matrix.package }}
+        run: npx turbo test --filter=\${{ matrix.package }}
+        env:
+          CI: true
+
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-\${{ matrix.package }}
+          path: packages/\${{ matrix.package }}/coverage/
+          retention-days: 7
+
+  build:
+    needs: [lint-and-typecheck, test]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: \${{ fromJson(needs.detect-changes.outputs.packages) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - run: npm ci
+
+      - name: Build \${{ matrix.package }}
+        run: npx turbo build --filter=\${{ matrix.package }}
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-\${{ matrix.package }}
+          path: packages/\${{ matrix.package }}/dist/
+          retention-days: 1
+
+  deploy-api:
+    needs: [build, detect-changes]
+    if: |
+      github.ref == 'refs/heads/main' &&
+      needs.detect-changes.outputs.api-changed == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-api
+          path: packages/api/dist/
+
+      - name: Deploy API
+        run: |
+          echo "Deploying API to production..."
+          # Add your deployment command here
+          # e.g., aws ecs update-service, kubectl apply, etc.
+        env:
+          DEPLOY_TOKEN: \${{ secrets.DEPLOY_TOKEN }}
+
+  deploy-web:
+    needs: [build, detect-changes]
+    if: |
+      github.ref == 'refs/heads/main' &&
+      needs.detect-changes.outputs.web-changed == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-web
+          path: packages/web/dist/
+
+      - name: Deploy Web
+        run: |
+          echo "Deploying Web to production..."
+          # e.g., vercel deploy --prod, aws s3 sync, etc.
+        env:
+          DEPLOY_TOKEN: \${{ secrets.DEPLOY_TOKEN }}`,
+  usage: `# Directory structure for this workflow:
+#
+# monorepo/
+# ├── .github/workflows/ci.yml    (this file)
+# ├── package.json                 (root with workspaces)
+# ├── turbo.json                   (turborepo config)
+# └── packages/
+#     ├── api/
+#     │   ├── package.json
+#     │   ├── src/
+#     │   └── tsconfig.json
+#     ├── web/
+#     │   ├── package.json
+#     │   ├── src/
+#     │   └── tsconfig.json
+#     └── shared/
+#         ├── package.json
+#         ├── src/
+#         └── tsconfig.json
+
+# turbo.json example:
+# {
+#   "pipeline": {
+#     "build": {
+#       "dependsOn": ["^build"],
+#       "outputs": ["dist/**"]
+#     },
+#     "test": {
+#       "dependsOn": ["build"]
+#     },
+#     "lint": {},
+#     "typecheck": {
+#       "dependsOn": ["^build"]
+#     }
+#   }
+# }`,
+};
+
+## Overview
+
+A GitHub Actions CI/CD workflow designed for monorepo architectures that only builds, tests, and deploys packages that have actually changed. This eliminates wasted CI minutes and enables independent deployment of services, which is critical as monorepos grow beyond a handful of packages.
+
+Key design decisions:
+- **Path filtering** detects which packages changed, including shared dependency changes that affect downstream packages
+- **Matrix strategy** runs tests in parallel per affected package for fast feedback
+- **Concurrency control** cancels outdated runs when new commits are pushed
+- **Conditional deployment** only deploys services whose code actually changed
+- **Turborepo integration** leverages build caching and dependency-aware task execution
+- **fail-fast: false** ensures one package failure does not skip tests for other packages
+
+## Code
+
+```yaml
+name: Monorepo CI/CD
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+
+permissions:
+  contents: read
+  pull-requests: write
+  packages: write
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  detect-changes:
+    runs-on: ubuntu-latest
+    outputs:
+      packages: ${{ steps.filter.outputs.changes }}
+      api-changed: ${{ steps.filter.outputs.api }}
+      web-changed: ${{ steps.filter.outputs.web }}
+      shared-changed: ${{ steps.filter.outputs.shared }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dorny/paths-filter@v3
+        id: filter
+        with:
+          filters: |
+            api:
+              - 'packages/api/**'
+              - 'packages/shared/**'
+            web:
+              - 'packages/web/**'
+              - 'packages/shared/**'
+            shared:
+              - 'packages/shared/**'
+
+  lint-and-typecheck:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.packages != '[]'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - run: npm ci
+      - run: npx turbo lint typecheck --filter='...[origin/main]'
+
+  test:
+    needs: detect-changes
+    if: needs.detect-changes.outputs.packages != '[]'
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        package: ${{ fromJson(needs.detect-changes.outputs.packages) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - run: npm ci
+      - name: Run tests for ${{ matrix.package }}
+        run: npx turbo test --filter=${{ matrix.package }}
+        env:
+          CI: true
+      - name: Upload coverage
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: coverage-${{ matrix.package }}
+          path: packages/${{ matrix.package }}/coverage/
+          retention-days: 7
+
+  build:
+    needs: [lint-and-typecheck, test]
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        package: ${{ fromJson(needs.detect-changes.outputs.packages) }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: 'npm'
+      - run: npm ci
+      - name: Build ${{ matrix.package }}
+        run: npx turbo build --filter=${{ matrix.package }}
+
+  deploy-api:
+    needs: [build, detect-changes]
+    if: |
+      github.ref == 'refs/heads/main' &&
+      needs.detect-changes.outputs.api-changed == 'true'
+    runs-on: ubuntu-latest
+    environment: production
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/download-artifact@v4
+        with:
+          name: build-api
+          path: packages/api/dist/
+      - name: Deploy API
+        run: echo "Deploying API to production..."
+        env:
+          DEPLOY_TOKEN: ${{ secrets.DEPLOY_TOKEN }}
+```
+
+## Usage
+
+```yaml
+# Directory structure for this workflow:
+#
+# monorepo/
+# ├── .github/workflows/ci.yml
+# ├── package.json (root with workspaces)
+# ├── turbo.json
+# └── packages/
+#     ├── api/
+#     ├── web/
+#     └── shared/
+
+# turbo.json:
+# {
+#   "pipeline": {
+#     "build": { "dependsOn": ["^build"], "outputs": ["dist/**"] },
+#     "test": { "dependsOn": ["build"] },
+#     "lint": {},
+#     "typecheck": { "dependsOn": ["^build"] }
+#   }
+# }
+```
+
+## Notes
+
+- The `dorny/paths-filter` action compares against the base branch to detect changes accurately in PRs
+- Include shared package paths in downstream filters (api, web) so shared changes trigger dependent builds
+- Use `fail-fast: false` to get complete test results even when one package fails
+- The `concurrency` group with `cancel-in-progress` saves CI minutes on rapid pushes
+- For larger monorepos (10+ packages), consider Nx or Turborepo remote caching to further reduce build times
+- Add `workflow_dispatch` trigger for manual deployments and rollbacks
+- Use GitHub Environments with required reviewers for production deployment approval gates
