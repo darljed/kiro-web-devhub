@@ -56,15 +56,15 @@ function AnimatedCounter({
 }
 
 const stats = [
-  { label: "Snippet Categories", value: 4, suffix: "+" },
-  { label: "Ready-to-Use Snippets", value: 20, suffix: "+" },
-  { label: "Languages Supported", value: 6, suffix: "" },
+  { label: "Production-Ready Snippets", value: 122, suffix: "+" },
+  { label: "Languages & Frameworks", value: 15, suffix: "+" },
+  { label: "Categories", value: 12, suffix: "+" },
   { label: "Copy Time (seconds)", value: 1, suffix: "" },
 ];
 
 export function StatsSection() {
   return (
-    <section className="border-t border-zinc-200 bg-zinc-50/50 py-16 dark:border-zinc-800 dark:bg-zinc-900/30 sm:py-20">
+    <section className="border-t border-zinc-200 py-16 dark:border-zinc-800 sm:py-20">
       <div className="mx-auto max-w-5xl px-4 sm:px-6">
         <AnimateOnScroll>
           <div className="grid grid-cols-2 gap-8 text-center lg:grid-cols-4">

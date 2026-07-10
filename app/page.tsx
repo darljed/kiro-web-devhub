@@ -1,6 +1,7 @@
 import { HeroSection } from "@/components/landing/HeroSection";
 import { FeaturesSection } from "@/components/landing/FeaturesSection";
-import { UseCasesSection } from "@/components/landing/UseCasesSection";
+import { LivePreviewSection } from "@/components/landing/LivePreviewSection";
+import { CategoriesSection } from "@/components/landing/CategoriesSection";
 import { StatsSection } from "@/components/landing/StatsSection";
 import { CTASection } from "@/components/landing/CTASection";
 
@@ -9,7 +10,8 @@ export default function Home() {
     <article>
       <HeroSection />
       <FeaturesSection />
-      <UseCasesSection />
+      <LivePreviewSection />
+      <CategoriesSection />
       <StatsSection />
       <CTASection />
     </article>

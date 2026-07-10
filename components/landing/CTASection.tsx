@@ -62,32 +62,6 @@ export function CTASection() {
               <line x1="12" y1="17" x2="12" y2="21" />
             </svg>
 
-            <svg
-              aria-hidden="true"
-              className="absolute left-1/4 top-4 h-5 w-5 animate-rotate text-sky-200/40 sm:h-6 sm:w-6"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <polygon points="12 2 15.09 8.26 22 9.27 17 14.14 18.18 21.02 12 17.77 5.82 21.02 7 14.14 2 9.27 8.91 8.26 12 2" />
-            </svg>
-
-            <svg
-              aria-hidden="true"
-              className="absolute right-1/4 bottom-4 h-5 w-5 animate-pulse-scale-delayed text-indigo-200/40 sm:h-6 sm:w-6"
-              viewBox="0 0 24 24"
-              fill="none"
-              stroke="currentColor"
-              strokeWidth="2"
-              strokeLinecap="round"
-              strokeLinejoin="round"
-            >
-              <path d="M6 3h12l4 6-10 13L2 9z" />
-            </svg>
-
             {/* Background glow effects */}
             <div
               className="absolute left-0 top-0 h-40 w-40 rounded-full bg-purple-400/20 blur-3xl"
@@ -100,19 +74,19 @@ export function CTASection() {
 
             <div className="relative z-10">
               <h2 className="text-2xl font-bold text-white sm:text-3xl lg:text-4xl">
-                Start Building Your Snippet Library
+                120+ Snippets Ready to Use
               </h2>
               <p className="mx-auto mt-4 max-w-lg text-base text-indigo-100/90 sm:text-lg">
-                Explore community-contributed snippets across Splunk, React,
-                Python, Bash, and more. Copy what you need and get back to
-                building.
+                Production-tested patterns across TypeScript, React, Python, Go,
+                Rust, Splunk, Terraform, and more. Copy what you need and feed
+                it to your AI or ship it directly.
               </p>
               <div className="mt-8">
                 <Link
                   href="/snippets"
                   className="inline-flex items-center rounded-lg bg-gradient-to-r from-white to-indigo-50 px-6 py-3 text-sm font-semibold text-indigo-700 shadow-lg transition-all hover:scale-105 hover:shadow-xl sm:px-8 sm:py-3.5 sm:text-base"
                 >
-                  Explore All Snippets
+                  Explore the Full Library
                 </Link>
               </div>
             </div>
