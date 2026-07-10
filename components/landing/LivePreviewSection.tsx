@@ -1,7 +1,7 @@
 "use client";
 
 import { AnimateOnScroll } from "@/components/AnimateOnScroll";
-import { Copy, Check } from "lucide-react";
+import { Copy, Check, X } from "lucide-react";
 import { useState } from "react";
 
 const sampleCode = `export function useDebounce<T>(value: T, delay: number): T {
@@ -19,12 +19,17 @@ const sampleCode = `export function useDebounce<T>(value: T, delay: number): T {
 }`;
 
 export function LivePreviewSection() {
-  const [copied, setCopied] = useState(false);
+  const [state, setState] = useState<"idle" | "copied" | "failed">("idle");
 
-  const handleCopy = () => {
-    navigator.clipboard.writeText(sampleCode);
-    setCopied(true);
-    setTimeout(() => setCopied(false), 2000);
+  const handleCopy = async () => {
+    try {
+      await navigator.clipboard.writeText(sampleCode);
+      setState("copied");
+      setTimeout(() => setState("idle"), 2000);
+    } catch {
+      setState("failed");
+      setTimeout(() => setState("idle"), 2000);
+    }
   };
 
   return (
@@ -64,10 +69,18 @@ export function LivePreviewSection() {
                 <button
                   onClick={handleCopy}
                   className="absolute right-3 top-3 rounded-md border border-zinc-300 bg-white/90 p-1.5 text-zinc-600 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:bg-zinc-800/90 dark:text-zinc-400 dark:hover:bg-zinc-700"
-                  aria-label="Copy code"
+                  aria-label={
+                    state === "copied"
+                      ? "Copied"
+                      : state === "failed"
+                        ? "Copy failed"
+                        : "Copy code to clipboard"
+                  }
                 >
-                  {copied ? (
+                  {state === "copied" ? (
                     <Check className="h-4 w-4 text-emerald-500" />
+                  ) : state === "failed" ? (
+                    <X className="h-4 w-4 text-red-500" />
                   ) : (
                     <Copy className="h-4 w-4" />
                   )}

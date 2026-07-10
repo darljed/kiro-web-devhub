@@ -94,7 +94,7 @@ const categories: Category[] = [
   },
   {
     name: "GraphQL",
-    count: 2,
+    count: 3,
     icon: Workflow,
     gradient: "from-fuchsia-500 to-fuchsia-600",
   },

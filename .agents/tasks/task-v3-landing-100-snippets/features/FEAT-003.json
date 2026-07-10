@@ -1,0 +1,28 @@
+{
+  "id": "FEAT-003",
+  "type": "fix",
+  "description": "Address review issues: fix clipboard error handling, delete dead files, add missing GraphQL snippet, update stats and category counts.",
+  "status": "in_progress",
+  "steps": [
+    "Fix clipboard error handling in LivePreviewSection.tsx to use async/await with try/catch matching CopyButton.tsx pattern",
+    "Delete dead component files: HeroIllustration.tsx, UseCasesSection.tsx, FeatureIllustrations.tsx",
+    "Add 1 GraphQL snippet to bring GraphQL to 3 total",
+    "Update StatsSection to show 120+ instead of 122+",
+    "Update CategoriesSection GraphQL count from 2 to 3"
+  ],
+  "acceptance_criteria": [
+    "LivePreviewSection clipboard handling uses async/await with try/catch",
+    "HeroIllustration.tsx, UseCasesSection.tsx, and FeatureIllustrations.tsx are deleted",
+    "GraphQL has 3 snippets in content/snippets/",
+    "StatsSection shows 120+",
+    "CategoriesSection shows GraphQL count as 3",
+    "npm run build passes",
+    "npm run lint passes"
+  ],
+  "verification": [
+    "Run: npm run build",
+    "Run: npm run lint"
+  ],
+  "blocked_reason": null,
+  "findings": null
+}

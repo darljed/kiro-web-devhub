@@ -56,7 +56,7 @@ function AnimatedCounter({
 }
 
 const stats = [
-  { label: "Production-Ready Snippets", value: 122, suffix: "+" },
+  { label: "Production-Ready Snippets", value: 120, suffix: "+" },
   { label: "Languages & Frameworks", value: 15, suffix: "+" },
   { label: "Categories", value: 12, suffix: "+" },
   { label: "Copy Time (seconds)", value: 1, suffix: "" },
