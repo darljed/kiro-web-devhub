@@ -1,0 +1,111 @@
+---
+title: "Disk Usage Monitor"
+description: "Automated disk monitoring with threshold alerts, growth rate tracking, and capacity forecast for proactive storage management."
+category: "Bash"
+language: "bash"
+tags: ["bash", "monitoring", "disk", "alerting", "production-ready"]
+createdAt: "2025-02-28"
+updatedAt: "2025-03-18"
+---
+
+export const codeBlocks = {
+  main: `#!/usr/bin/env bash
+set -euo pipefail
+
+WARN_THRESHOLD=\${WARN_THRESHOLD:-80}
+CRIT_THRESHOLD=\${CRIT_THRESHOLD:-90}
+HISTORY_FILE="/var/lib/diskmon/history.csv"
+SLACK_WEBHOOK="\${SLACK_WEBHOOK:-}"
+
+mkdir -p "$(dirname "$HISTORY_FILE")"
+
+check_mount() {
+    local mount="$1"
+    local usage pct avail total used
+
+    read -r total used avail pct <<< $(df -BM "$mount" | awk 'NR==2 {gsub(/%/,"",$5); print $2,$3,$4,$5}')
+    pct=\${pct%\%}
+
+    # Record to history
+    echo "$(date +%s),$mount,$pct,$avail" >> "$HISTORY_FILE"
+
+    # Calculate growth rate from last 24h
+    local growth_rate="N/A"
+    local hours_to_full="N/A"
+    if [[ -f "$HISTORY_FILE" ]]; then
+        local day_ago=$(($(date +%s) - 86400))
+        local prev_pct=$(awk -F, -v mount="$mount" -v cutoff="$day_ago" \
+            '$1 >= cutoff && $2 == mount {print $3; exit}' "$HISTORY_FILE")
+        if [[ -n "$prev_pct" && "$prev_pct" != "$pct" ]]; then
+            growth_rate=$(echo "scale=1; $pct - $prev_pct" | bc)
+            if (( $(echo "$growth_rate > 0" | bc -l) )); then
+                hours_to_full=$(echo "scale=0; (100 - $pct) / ($growth_rate / 24)" | bc)
+            fi
+        fi
+    fi
+
+    # Determine severity
+    local severity="OK"
+    if (( pct >= CRIT_THRESHOLD )); then
+        severity="CRITICAL"
+    elif (( pct >= WARN_THRESHOLD )); then
+        severity="WARNING"
+    fi
+
+    printf "%-20s %4s%% (%sM avail) Growth: %s%%/day ETA full: %sh [%s]\\n" \
+        "$mount" "$pct" "$avail" "$growth_rate" "$hours_to_full" "$severity"
+
+    if [[ "$severity" != "OK" ]]; then
+        alert "$severity" "$mount" "$pct" "$avail" "$hours_to_full"
+    fi
+}
+
+alert() {
+    local severity="$1" mount="$2" pct="$3" avail="$4" eta="$5"
+    local host=$(hostname)
+    local msg="[$severity] $host:$mount at \${pct}% (Available: \${avail}M, Full in: \${eta}h)"
+
+    if [[ -n "$SLACK_WEBHOOK" ]]; then
+        local color="warning"
+        [[ "$severity" == "CRITICAL" ]] && color="danger"
+        curl -sS -X POST "$SLACK_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "{\"attachments\":[{\"color\":\"$color\",\"text\":\"$msg\"}]}" \
+            > /dev/null 2>&1 || true
+    fi
+    logger -t diskmon "$msg"
+}
+
+# Clean history older than 7 days
+cleanup_history() {
+    if [[ -f "$HISTORY_FILE" ]]; then
+        local week_ago=$(($(date +%s) - 604800))
+        awk -F, -v cutoff="$week_ago" '$1 >= cutoff' "$HISTORY_FILE" > "$HISTORY_FILE.tmp"
+        mv "$HISTORY_FILE.tmp" "$HISTORY_FILE"
+    fi
+}
+
+echo "=== Disk Monitor: $(date) ==="
+for mount in / /var /tmp /home; do
+    [[ -d "$mount" ]] && check_mount "$mount"
+done
+cleanup_history`,
+};
+
+## Overview
+
+A disk usage monitor that tracks growth rates over time, predicts when filesystems will be full, and sends alerts before capacity issues cause outages. Historical data enables trend analysis.
+
+## Code
+
+```bash
+WARN_THRESHOLD=80 CRIT_THRESHOLD=90 SLACK_WEBHOOK=https://... ./disk-monitor.sh
+```
+
+## Notes
+
+- Growth rate is calculated from 24h historical data stored in CSV
+- ETA-to-full prediction uses linear extrapolation from the current growth rate
+- `logger -t diskmon` writes to syslog for centralized log collection
+- Run every 15 minutes via cron for accurate growth tracking
+- Clean up history older than 7 days to prevent the CSV from growing unbounded

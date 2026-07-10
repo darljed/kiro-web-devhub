@@ -1,0 +1,150 @@
+---
+title: "useIntersectionObserver Hook"
+description: "A React hook for detecting element visibility with configurable thresholds, enabling lazy loading, infinite scroll, and scroll-triggered animations."
+category: "React"
+language: "typescript"
+tags: ["react", "hooks", "intersection-observer", "performance", "production-ready"]
+createdAt: "2025-01-18"
+updatedAt: "2025-02-10"
+---
+
+export const codeBlocks = {
+  main: `import { useState, useEffect, useRef, useCallback } from "react";
+
+interface UseIntersectionObserverOptions {
+  threshold?: number | number[];
+  root?: Element | null;
+  rootMargin?: string;
+  freezeOnceVisible?: boolean;
+  onChange?: (isIntersecting: boolean, entry: IntersectionObserverEntry) => void;
+}
+
+interface UseIntersectionObserverReturn {
+  ref: (node: Element | null) => void;
+  isIntersecting: boolean;
+  entry: IntersectionObserverEntry | null;
+}
+
+export function useIntersectionObserver(
+  options: UseIntersectionObserverOptions = {}
+): UseIntersectionObserverReturn {
+  const {
+    threshold = 0,
+    root = null,
+    rootMargin = "0px",
+    freezeOnceVisible = false,
+    onChange,
+  } = options;
+
+  const [entry, setEntry] = useState<IntersectionObserverEntry | null>(null);
+  const [node, setNode] = useState<Element | null>(null);
+  const observerRef = useRef<IntersectionObserver | null>(null);
+  const frozen = useRef(false);
+
+  const ref = useCallback((element: Element | null) => {
+    setNode(element);
+  }, []);
+
+  useEffect(() => {
+    if (!node) return;
+    if (frozen.current) return;
+
+    // Cleanup previous observer
+    observerRef.current?.disconnect();
+
+    const observer = new IntersectionObserver(
+      ([observerEntry]) => {
+        setEntry(observerEntry);
+        onChange?.(observerEntry.isIntersecting, observerEntry);
+
+        if (freezeOnceVisible && observerEntry.isIntersecting) {
+          frozen.current = true;
+          observer.disconnect();
+        }
+      },
+      { threshold, root, rootMargin }
+    );
+
+    observer.observe(node);
+    observerRef.current = observer;
+
+    return () => {
+      observer.disconnect();
+    };
+  }, [node, threshold, root, rootMargin, freezeOnceVisible, onChange]);
+
+  const isIntersecting = entry?.isIntersecting ?? false;
+
+  return { ref, isIntersecting, entry };
+}
+
+// Infinite scroll hook built on top
+export function useInfiniteScroll(
+  onLoadMore: () => void,
+  options?: { rootMargin?: string; enabled?: boolean }
+) {
+  const { ref, isIntersecting } = useIntersectionObserver({
+    rootMargin: options?.rootMargin ?? "200px",
+  });
+
+  useEffect(() => {
+    if (isIntersecting && (options?.enabled ?? true)) {
+      onLoadMore();
+    }
+  }, [isIntersecting, onLoadMore, options?.enabled]);
+
+  return { sentinelRef: ref };
+}`,
+  usage: `// Lazy-load images
+function LazyImage({ src, alt }: { src: string; alt: string }) {
+  const { ref, isIntersecting } = useIntersectionObserver({
+    freezeOnceVisible: true,
+    rootMargin: "100px",
+  });
+
+  return (
+    <div ref={ref}>
+      {isIntersecting ? (
+        <img src={src} alt={alt} loading="lazy" />
+      ) : (
+        <div className="h-48 bg-gray-200 animate-pulse" />
+      )}
+    </div>
+  );
+}
+
+// Infinite scroll
+function Feed({ items, loadMore, hasMore }) {
+  const { sentinelRef } = useInfiniteScroll(loadMore, { enabled: hasMore });
+
+  return (
+    <div>
+      {items.map(item => <FeedItem key={item.id} {...item} />)}
+      <div ref={sentinelRef} />
+    </div>
+  );
+}`,
+};
+
+## Overview
+
+A flexible Intersection Observer hook that tracks element visibility relative to a viewport or scroll container. It supports lazy loading, scroll-triggered animations, and infinite scroll with a single composable API.
+
+## Code
+
+```typescript
+const { ref, isIntersecting } = useIntersectionObserver({
+  threshold: 0.5,
+  freezeOnceVisible: true,
+});
+
+return <div ref={ref}>{isIntersecting && <ExpensiveComponent />}</div>;
+```
+
+## Notes
+
+- `freezeOnceVisible` stops observing after first intersection, ideal for one-time animations and lazy loads
+- The callback ref pattern (`ref` function) handles dynamic elements that mount/unmount
+- `rootMargin` with positive values triggers before the element enters viewport (pre-loading)
+- Threshold of 0 triggers on any pixel visible; 1.0 requires full visibility
+- Built-in `useInfiniteScroll` composes on top for paginated feeds

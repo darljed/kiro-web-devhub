@@ -1,0 +1,160 @@
+---
+title: "Recursive CTE Patterns"
+description: "Recursive Common Table Expressions for hierarchical data, graph traversal, date series generation, and organizational trees."
+category: "SQL"
+language: "sql"
+tags: ["sql", "recursive-cte", "hierarchical", "graph-traversal", "production-ready"]
+createdAt: "2025-03-05"
+updatedAt: "2025-03-25"
+---
+
+export const codeBlocks = {
+  main: `-- Organizational hierarchy with depth and path
+WITH RECURSIVE org_tree AS (
+    -- Base case: top-level managers (no manager_id)
+    SELECT
+        id,
+        name,
+        manager_id,
+        title,
+        1 AS depth,
+        ARRAY[name] AS path,
+        name AS root_manager
+    FROM employees
+    WHERE manager_id IS NULL
+
+    UNION ALL
+
+    -- Recursive case: employees who report to someone in the tree
+    SELECT
+        e.id,
+        e.name,
+        e.manager_id,
+        e.title,
+        t.depth + 1,
+        t.path || e.name,
+        t.root_manager
+    FROM employees e
+    INNER JOIN org_tree t ON e.manager_id = t.id
+    WHERE t.depth < 10  -- Safety limit to prevent infinite recursion
+)
+SELECT
+    REPEAT('  ', depth - 1) || name AS hierarchy,
+    title,
+    depth,
+    array_to_string(path, ' > ') AS full_path
+FROM org_tree
+ORDER BY path;
+
+-- Bill of Materials: product components with total cost
+WITH RECURSIVE bom AS (
+    SELECT
+        p.product_id,
+        p.name AS product_name,
+        p.component_id,
+        p.quantity,
+        c.unit_cost,
+        p.quantity * c.unit_cost AS line_cost,
+        1 AS level,
+        ARRAY[p.product_id] AS visited
+    FROM product_components p
+    JOIN components c ON c.id = p.component_id
+    WHERE p.product_id = 'WIDGET-100'
+
+    UNION ALL
+
+    SELECT
+        b.product_id,
+        b.product_name,
+        p.component_id,
+        b.quantity * p.quantity,
+        c.unit_cost,
+        b.quantity * p.quantity * c.unit_cost,
+        b.level + 1,
+        b.visited || p.component_id
+    FROM bom b
+    JOIN product_components p ON p.product_id = b.component_id
+    JOIN components c ON c.id = p.component_id
+    WHERE NOT p.component_id = ANY(b.visited)  -- Prevent cycles
+)
+SELECT
+    product_name,
+    COUNT(*) AS total_components,
+    SUM(line_cost) AS total_cost,
+    MAX(level) AS max_depth
+FROM bom
+GROUP BY product_name;
+
+-- Generate date series (PostgreSQL)
+WITH RECURSIVE date_series AS (
+    SELECT DATE '2025-01-01' AS dt
+    UNION ALL
+    SELECT dt + INTERVAL '1 day'
+    FROM date_series
+    WHERE dt < DATE '2025-12-31'
+)
+SELECT
+    ds.dt AS date,
+    COALESCE(COUNT(o.id), 0) AS order_count,
+    COALESCE(SUM(o.amount), 0) AS revenue
+FROM date_series ds
+LEFT JOIN orders o ON DATE(o.created_at) = ds.dt
+GROUP BY ds.dt
+ORDER BY ds.dt;
+
+-- Shortest path in a graph (BFS)
+WITH RECURSIVE paths AS (
+    SELECT
+        start_node,
+        end_node,
+        ARRAY[start_node, end_node] AS path,
+        weight AS total_weight,
+        1 AS hops
+    FROM edges
+    WHERE start_node = 'A'
+
+    UNION ALL
+
+    SELECT
+        p.start_node,
+        e.end_node,
+        p.path || e.end_node,
+        p.total_weight + e.weight,
+        p.hops + 1
+    FROM paths p
+    JOIN edges e ON e.start_node = p.end_node
+    WHERE NOT e.end_node = ANY(p.path)
+      AND p.hops < 10
+)
+SELECT DISTINCT ON (end_node)
+    end_node,
+    path,
+    total_weight,
+    hops
+FROM paths
+ORDER BY end_node, total_weight;`,
+};
+
+## Overview
+
+Recursive CTEs enable traversal of hierarchical and graph-structured data directly in SQL. They consist of a base case (anchor) and a recursive case that references itself, iterating until no new rows are produced.
+
+## Code
+
+```sql
+WITH RECURSIVE tree AS (
+    SELECT id, parent_id, 1 AS depth FROM nodes WHERE parent_id IS NULL
+    UNION ALL
+    SELECT n.id, n.parent_id, t.depth + 1
+    FROM nodes n JOIN tree t ON n.parent_id = t.id
+)
+SELECT * FROM tree;
+```
+
+## Notes
+
+- Always include a depth/cycle guard (`WHERE depth < N` or visited array) to prevent infinite loops
+- The `visited` array pattern detects cycles in graph structures
+- `UNION ALL` is required (not `UNION`) for recursive CTEs in most databases
+- Date series generation fills gaps in sparse time-series data for accurate charts
+- Performance tip: index the join column (parent_id, manager_id) for recursive traversal

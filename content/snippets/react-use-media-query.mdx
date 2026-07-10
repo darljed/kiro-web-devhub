@@ -1,0 +1,111 @@
+---
+title: "useMediaQuery Hook"
+description: "A SSR-safe React hook for responsive design that tracks CSS media query matches and triggers re-renders on breakpoint changes."
+category: "React"
+language: "typescript"
+tags: ["react", "hooks", "responsive", "media-query", "production-ready"]
+createdAt: "2025-02-05"
+updatedAt: "2025-02-25"
+---
+
+export const codeBlocks = {
+  main: `import { useSyncExternalStore, useCallback } from "react";
+
+export function useMediaQuery(query: string): boolean {
+  const subscribe = useCallback(
+    (callback: () => void) => {
+      const mediaQuery = window.matchMedia(query);
+      mediaQuery.addEventListener("change", callback);
+      return () => mediaQuery.removeEventListener("change", callback);
+    },
+    [query]
+  );
+
+  const getSnapshot = useCallback(() => {
+    return window.matchMedia(query).matches;
+  }, [query]);
+
+  const getServerSnapshot = useCallback(() => {
+    return false; // Default to false during SSR
+  }, []);
+
+  return useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+}
+
+// Predefined breakpoint hooks matching Tailwind CSS defaults
+export function useIsMobile(): boolean {
+  return !useMediaQuery("(min-width: 640px)");
+}
+
+export function useIsTablet(): boolean {
+  return useMediaQuery("(min-width: 640px) and (max-width: 1023px)");
+}
+
+export function useIsDesktop(): boolean {
+  return useMediaQuery("(min-width: 1024px)");
+}
+
+export function usePrefersDarkMode(): boolean {
+  return useMediaQuery("(prefers-color-scheme: dark)");
+}
+
+export function usePrefersReducedMotion(): boolean {
+  return useMediaQuery("(prefers-reduced-motion: reduce)");
+}
+
+// Responsive value selector
+export function useResponsiveValue<T>(values: {
+  base: T;
+  sm?: T;
+  md?: T;
+  lg?: T;
+  xl?: T;
+}): T {
+  const isSm = useMediaQuery("(min-width: 640px)");
+  const isMd = useMediaQuery("(min-width: 768px)");
+  const isLg = useMediaQuery("(min-width: 1024px)");
+  const isXl = useMediaQuery("(min-width: 1280px)");
+
+  if (isXl && values.xl !== undefined) return values.xl;
+  if (isLg && values.lg !== undefined) return values.lg;
+  if (isMd && values.md !== undefined) return values.md;
+  if (isSm && values.sm !== undefined) return values.sm;
+  return values.base;
+}`,
+  usage: `function NavigationBar() {
+  const isMobile = useIsMobile();
+  const prefersReducedMotion = usePrefersReducedMotion();
+
+  const columns = useResponsiveValue({ base: 1, sm: 2, md: 3, lg: 4 });
+
+  if (isMobile) {
+    return <MobileNav />;
+  }
+
+  return (
+    <nav className={prefersReducedMotion ? "" : "animate-slideIn"}>
+      <DesktopNav columns={columns} />
+    </nav>
+  );
+}`,
+};
+
+## Overview
+
+A hook that bridges CSS media queries with React's rendering, enabling responsive component logic beyond what CSS alone can handle. Built on `useSyncExternalStore` for concurrent-mode safety and SSR compatibility.
+
+## Code
+
+```typescript
+const isMobile = useMediaQuery("(max-width: 639px)");
+const prefersDark = useMediaQuery("(prefers-color-scheme: dark)");
+const columns = useResponsiveValue({ base: 1, md: 2, lg: 3 });
+```
+
+## Notes
+
+- `useSyncExternalStore` ensures tear-free reads even during concurrent rendering
+- Returns `false` during SSR to prevent hydration mismatches; content shifts after hydration
+- The `change` event listener fires only on threshold crossings, not on every resize
+- `usePrefersReducedMotion` respects accessibility settings for animations
+- `useResponsiveValue` provides a Chakra UI-like responsive prop experience

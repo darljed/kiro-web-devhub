@@ -1,0 +1,154 @@
+---
+title: "Init Containers Pattern"
+description: "Kubernetes init containers for database migrations, config loading, dependency waiting, and secret provisioning before app startup."
+category: "Kubernetes"
+language: "yaml"
+tags: ["kubernetes", "init-containers", "startup", "migrations", "production-ready"]
+createdAt: "2025-02-22"
+updatedAt: "2025-03-12"
+---
+
+export const codeBlocks = {
+  main: `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+  namespace: production
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: api-service
+  template:
+    metadata:
+      labels:
+        app: api-service
+    spec:
+      # Init containers run sequentially before the main container
+      initContainers:
+        # 1. Wait for database to be ready
+        - name: wait-for-db
+          image: busybox:1.36
+          command: ['sh', '-c']
+          args:
+            - |
+              echo "Waiting for PostgreSQL..."
+              until nc -z postgres-service 5432; do
+                echo "  DB not ready, retrying in 2s..."
+                sleep 2
+              done
+              echo "Database is ready!"
+
+        # 2. Run database migrations
+        - name: run-migrations
+          image: registry.example.com/api-service:latest
+          command: ['node', 'migrate.js']
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: db-credentials
+                  key: url
+          resources:
+            requests:
+              cpu: "100m"
+              memory: "128Mi"
+            limits:
+              cpu: "500m"
+              memory: "256Mi"
+
+        # 3. Download configuration from config service
+        - name: fetch-config
+          image: curlimages/curl:8.5.0
+          command: ['sh', '-c']
+          args:
+            - |
+              curl -sS -f \
+                -H "Authorization: Bearer $(cat /var/run/secrets/tokens/config-token)" \
+                "http://config-service/api/config/api-service" \
+                -o /config/app-config.json
+              echo "Config fetched successfully"
+          volumeMounts:
+            - name: config-volume
+              mountPath: /config
+            - name: token-volume
+              mountPath: /var/run/secrets/tokens
+
+        # 4. Warm up cache
+        - name: cache-warmer
+          image: registry.example.com/api-service:latest
+          command: ['node', 'scripts/warm-cache.js']
+          env:
+            - name: REDIS_URL
+              value: "redis://redis-service:6379"
+          volumeMounts:
+            - name: config-volume
+              mountPath: /config
+
+      # Main application container
+      containers:
+        - name: api
+          image: registry.example.com/api-service:latest
+          ports:
+            - containerPort: 8080
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: db-credentials
+                  key: url
+            - name: CONFIG_PATH
+              value: /config/app-config.json
+          volumeMounts:
+            - name: config-volume
+              mountPath: /config
+              readOnly: true
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 30
+
+      volumes:
+        - name: config-volume
+          emptyDir: {}
+        - name: token-volume
+          projected:
+            sources:
+              - serviceAccountToken:
+                  path: config-token
+                  expirationSeconds: 3600
+                  audience: config-service`,
+};
+
+## Overview
+
+Init containers establish preconditions before the main application starts: waiting for dependencies, running migrations, fetching configuration, and warming caches. They run sequentially, and the pod only starts when all succeed.
+
+## Code
+
+```yaml
+initContainers:
+  - name: wait-for-db
+    image: busybox
+    command: ['sh', '-c', 'until nc -z db 5432; do sleep 2; done']
+  - name: migrate
+    image: myapp
+    command: ['node', 'migrate.js']
+```
+
+## Notes
+
+- Init containers run in order; each must complete successfully before the next starts
+- If any init container fails, Kubernetes restarts the pod (with backoff)
+- Use lightweight images (`busybox`, `curl`) for utility init containers to reduce pull time
+- Shared volumes (`emptyDir`) pass data from init containers to the main container
+- Migration containers should be idempotent (safe to re-run on pod restart)
+- Service account token projection provides short-lived tokens for secure API access

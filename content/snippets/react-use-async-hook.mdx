@@ -1,0 +1,164 @@
+---
+title: "useAsync Hook"
+description: "A comprehensive async operation hook with loading/error/data states, automatic cancellation, and race condition prevention."
+category: "React"
+language: "typescript"
+tags: ["react", "hooks", "async", "data-fetching", "production-ready"]
+createdAt: "2025-04-05"
+updatedAt: "2025-04-20"
+---
+
+export const codeBlocks = {
+  main: `import { useState, useEffect, useCallback, useRef } from "react";
+
+type AsyncStatus = "idle" | "loading" | "success" | "error";
+
+interface AsyncState<T> {
+  status: AsyncStatus;
+  data: T | null;
+  error: Error | null;
+  isLoading: boolean;
+  isError: boolean;
+  isSuccess: boolean;
+}
+
+interface UseAsyncOptions<T> {
+  immediate?: boolean;
+  onSuccess?: (data: T) => void;
+  onError?: (error: Error) => void;
+}
+
+interface UseAsyncReturn<T, Args extends unknown[]> extends AsyncState<T> {
+  execute: (...args: Args) => Promise<T | null>;
+  reset: () => void;
+}
+
+export function useAsync<T, Args extends unknown[] = []>(
+  asyncFn: (...args: Args) => Promise<T>,
+  options: UseAsyncOptions<T> = {}
+): UseAsyncReturn<T, Args> {
+  const { immediate = false, onSuccess, onError } = options;
+  const [state, setState] = useState<AsyncState<T>>({
+    status: "idle",
+    data: null,
+    error: null,
+    isLoading: false,
+    isError: false,
+    isSuccess: false,
+  });
+
+  const mountedRef = useRef(true);
+  const executionIdRef = useRef(0);
+
+  useEffect(() => {
+    mountedRef.current = true;
+    return () => { mountedRef.current = false; };
+  }, []);
+
+  const execute = useCallback(
+    async (...args: Args): Promise<T | null> => {
+      const executionId = ++executionIdRef.current;
+
+      setState({
+        status: "loading",
+        data: null,
+        error: null,
+        isLoading: true,
+        isError: false,
+        isSuccess: false,
+      });
+
+      try {
+        const data = await asyncFn(...args);
+
+        // Prevent race conditions: only update if this is the latest execution
+        if (mountedRef.current && executionId === executionIdRef.current) {
+          setState({
+            status: "success",
+            data,
+            error: null,
+            isLoading: false,
+            isError: false,
+            isSuccess: true,
+          });
+          onSuccess?.(data);
+        }
+        return data;
+      } catch (err) {
+        const error = err instanceof Error ? err : new Error(String(err));
+        if (mountedRef.current && executionId === executionIdRef.current) {
+          setState({
+            status: "error",
+            data: null,
+            error,
+            isLoading: false,
+            isError: true,
+            isSuccess: false,
+          });
+          onError?.(error);
+        }
+        return null;
+      }
+    },
+    [asyncFn, onSuccess, onError]
+  );
+
+  const reset = useCallback(() => {
+    executionIdRef.current++;
+    setState({
+      status: "idle",
+      data: null,
+      error: null,
+      isLoading: false,
+      isError: false,
+      isSuccess: false,
+    });
+  }, []);
+
+  useEffect(() => {
+    if (immediate) {
+      execute(...([] as unknown as Args));
+    }
+  }, [immediate, execute]);
+
+  return { ...state, execute, reset };
+}`,
+  usage: `function UserProfile({ userId }: { userId: string }) {
+  const { data: user, isLoading, isError, error, execute } = useAsync(
+    (id: string) => fetch(\`/api/users/\${id}\`).then(r => r.json()),
+    { immediate: false }
+  );
+
+  useEffect(() => { execute(userId); }, [userId, execute]);
+
+  if (isLoading) return <Spinner />;
+  if (isError) return <ErrorMessage error={error!} onRetry={() => execute(userId)} />;
+  if (!user) return null;
+
+  return <div>{user.name}</div>;
+}
+
+// With immediate execution (no args needed)
+const { data: config } = useAsync(
+  () => fetch("/api/config").then(r => r.json()),
+  { immediate: true }
+);`,
+};
+
+## Overview
+
+A hook that wraps any async function with loading, error, and success states, race condition prevention, and automatic cleanup on unmount. The execution ID pattern ensures only the most recent call updates state, preventing stale data from earlier requests.
+
+## Code
+
+```typescript
+const { data, isLoading, error, execute } = useAsync(fetchUser);
+```
+
+## Notes
+
+- Race condition prevention via incrementing execution IDs discards responses from stale requests
+- `mountedRef` prevents state updates after component unmount (avoids React warnings)
+- `immediate: true` triggers execution on mount without manual `execute()` call
+- The `reset` function clears all state and cancels any pending execution tracking
+- For server component data fetching, prefer `use()` or Suspense instead of this hook

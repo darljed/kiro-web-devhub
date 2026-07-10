@@ -1,0 +1,166 @@
+---
+title: "Pandas Pivot Table Analysis"
+description: "Advanced pivot table patterns for multi-dimensional data analysis with custom aggregations, margins, and formatting."
+category: "Python"
+language: "python"
+tags: ["python", "pandas", "data-analysis", "pivot-table", "production-ready"]
+createdAt: "2025-02-20"
+updatedAt: "2025-03-10"
+---
+
+export const codeBlocks = {
+  main: `import pandas as pd
+import numpy as np
+from typing import Any
+
+
+def create_sales_analysis(df: pd.DataFrame) -> dict[str, pd.DataFrame]:
+    """Generate comprehensive sales analysis using pivot tables.
+
+    Expected columns: date, region, product, category, revenue, quantity, cost
+    """
+
+    # Ensure date column is datetime
+    df["date"] = pd.to_datetime(df["date"])
+    df["month"] = df["date"].dt.to_period("M")
+    df["quarter"] = df["date"].dt.to_period("Q")
+    df["profit"] = df["revenue"] - df["cost"]
+    df["margin_pct"] = (df["profit"] / df["revenue"] * 100).round(1)
+
+    # 1. Revenue by Region and Product with margins (totals)
+    revenue_pivot = pd.pivot_table(
+        df,
+        values="revenue",
+        index="region",
+        columns="category",
+        aggfunc="sum",
+        margins=True,
+        margins_name="Total",
+        fill_value=0,
+    ).round(2)
+
+    # 2. Multi-metric summary by quarter
+    quarterly_summary = pd.pivot_table(
+        df,
+        values=["revenue", "quantity", "profit"],
+        index="quarter",
+        columns="region",
+        aggfunc={
+            "revenue": "sum",
+            "quantity": "sum",
+            "profit": ["sum", "mean"],
+        },
+        fill_value=0,
+    ).round(2)
+
+    # 3. Month-over-month growth by region
+    monthly_revenue = pd.pivot_table(
+        df,
+        values="revenue",
+        index="month",
+        columns="region",
+        aggfunc="sum",
+        fill_value=0,
+    )
+    growth_pct = monthly_revenue.pct_change() * 100
+    growth_pct = growth_pct.round(1)
+
+    # 4. Top products per region with rank
+    product_performance = pd.pivot_table(
+        df,
+        values=["revenue", "quantity", "margin_pct"],
+        index=["region", "product"],
+        aggfunc={"revenue": "sum", "quantity": "sum", "margin_pct": "mean"},
+    ).round(2)
+
+    # Rank products within each region
+    product_performance["rank"] = product_performance.groupby(level="region")[
+        "revenue"
+    ].rank(ascending=False, method="dense")
+    product_performance = product_performance.sort_values(
+        ["region", "rank"]
+    )
+
+    # 5. Cohort analysis: customer retention style pivot
+    # Shows how revenue from each acquisition month decays over time
+    def cohort_analysis(df: pd.DataFrame) -> pd.DataFrame:
+        df["cohort_month"] = df.groupby("customer_id")["date"].transform("min").dt.to_period("M")
+        df["months_since"] = (
+            df["date"].dt.to_period("M") - df["cohort_month"]
+        ).apply(lambda x: x.n)
+
+        cohort_pivot = pd.pivot_table(
+            df,
+            values="customer_id",
+            index="cohort_month",
+            columns="months_since",
+            aggfunc="nunique",
+        )
+
+        # Convert to retention percentages
+        cohort_sizes = cohort_pivot.iloc[:, 0]
+        retention = cohort_pivot.div(cohort_sizes, axis=0) * 100
+        return retention.round(1)
+
+    return {
+        "revenue_by_region": revenue_pivot,
+        "quarterly_summary": quarterly_summary,
+        "growth_pct": growth_pct,
+        "product_performance": product_performance,
+    }
+
+
+def format_pivot_for_export(
+    pivot: pd.DataFrame,
+    currency_cols: list[str] | None = None,
+    pct_cols: list[str] | None = None,
+) -> pd.DataFrame:
+    """Format a pivot table for Excel/CSV export."""
+    formatted = pivot.copy()
+    if currency_cols:
+        for col in currency_cols:
+            if col in formatted.columns:
+                formatted[col] = formatted[col].apply(lambda x: f"$" + f"{x:,.2f}")
+    if pct_cols:
+        for col in pct_cols:
+            if col in formatted.columns:
+                formatted[col] = formatted[col].apply(lambda x: f"{x:.1f}%")
+    return formatted`,
+  usage: `# Load and analyze sales data
+df = pd.read_csv("sales_data.csv")
+analysis = create_sales_analysis(df)
+
+# Access specific views
+print(analysis["revenue_by_region"])
+print(analysis["growth_pct"].tail())
+
+# Export to Excel with formatting
+with pd.ExcelWriter("report.xlsx", engine="openpyxl") as writer:
+    for name, table in analysis.items():
+        table.to_excel(writer, sheet_name=name[:31])`,
+};
+
+## Overview
+
+Advanced pivot table techniques for multi-dimensional business data analysis. Covers revenue breakdowns, month-over-month growth calculations, ranked product performance, and cohort retention analysis using pandas pivot tables and groupby operations.
+
+## Code
+
+```python
+pivot = pd.pivot_table(
+    df,
+    values="revenue",
+    index="region",
+    columns="quarter",
+    aggfunc="sum",
+    margins=True,
+)
+```
+
+## Notes
+
+- `margins=True` adds row/column totals automatically
+- Multi-value aggregation supports different functions per metric via dict `aggfunc`
+- `pct_change()` on a pivoted DataFrame gives period-over-period growth rates
+- Ranking within groups uses `groupby().rank()` on the pivot result
+- For very large datasets, consider `dask` DataFrames which support the same pivot API

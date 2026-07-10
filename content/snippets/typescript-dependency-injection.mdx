@@ -1,0 +1,167 @@
+---
+title: "Lightweight Dependency Injection Container"
+description: "A type-safe DI container with constructor injection, singleton/transient scoping, and lazy resolution for modular architectures."
+category: "TypeScript"
+language: "typescript"
+tags: ["typescript", "dependency-injection", "architecture", "production-ready"]
+createdAt: "2025-02-18"
+updatedAt: "2025-03-10"
+---
+
+export const codeBlocks = {
+  main: `type Factory<T> = () => T;
+type Scope = "singleton" | "transient";
+
+interface Registration<T> {
+  factory: Factory<T>;
+  scope: Scope;
+  instance?: T;
+}
+
+export class Container {
+  private registrations = new Map<string, Registration<unknown>>();
+
+  register<T>(token: string, factory: Factory<T>, scope: Scope = "singleton"): this {
+    this.registrations.set(token, { factory, scope });
+    return this;
+  }
+
+  resolve<T>(token: string): T {
+    const registration = this.registrations.get(token);
+    if (!registration) {
+      throw new Error(\`No registration found for token: \${token}\`);
+    }
+
+    if (registration.scope === "singleton") {
+      if (!registration.instance) {
+        registration.instance = registration.factory();
+      }
+      return registration.instance as T;
+    }
+
+    return registration.factory() as T;
+  }
+
+  has(token: string): boolean {
+    return this.registrations.has(token);
+  }
+
+  reset(): void {
+    this.registrations.clear();
+  }
+}
+
+// Token constants for type-safe resolution
+export const TOKENS = {
+  Logger: "Logger",
+  Database: "Database",
+  UserRepository: "UserRepository",
+  AuthService: "AuthService",
+  EmailService: "EmailService",
+} as const;
+
+// Example service definitions
+interface Logger {
+  info(message: string, meta?: Record<string, unknown>): void;
+  error(message: string, error?: Error): void;
+}
+
+interface Database {
+  query<T>(sql: string, params?: unknown[]): Promise<T[]>;
+  close(): Promise<void>;
+}
+
+interface UserRepository {
+  findById(id: string): Promise<{ id: string; email: string } | null>;
+  create(data: { email: string; name: string }): Promise<{ id: string }>;
+}
+
+// Composition root
+export function createContainer(config: { dbUrl: string; logLevel: string }): Container {
+  const container = new Container();
+
+  container.register<Logger>(TOKENS.Logger, () => ({
+    info: (msg, meta) => console.log(JSON.stringify({ level: "info", msg, ...meta })),
+    error: (msg, err) => console.error(JSON.stringify({ level: "error", msg, error: err?.message })),
+  }));
+
+  container.register<Database>(TOKENS.Database, () => {
+    const logger = container.resolve<Logger>(TOKENS.Logger);
+    logger.info("Creating database connection", { url: config.dbUrl });
+    return createDatabaseConnection(config.dbUrl);
+  });
+
+  container.register<UserRepository>(TOKENS.UserRepository, () => {
+    const db = container.resolve<Database>(TOKENS.Database);
+    const logger = container.resolve<Logger>(TOKENS.Logger);
+    return new UserRepositoryImpl(db, logger);
+  });
+
+  return container;
+}
+
+function createDatabaseConnection(_url: string): Database {
+  return { query: async () => [], close: async () => {} };
+}
+
+class UserRepositoryImpl implements UserRepository {
+  constructor(private db: Database, private logger: Logger) {}
+  async findById(id: string) {
+    this.logger.info("Finding user", { id });
+    const rows = await this.db.query<{ id: string; email: string }>("SELECT * FROM users WHERE id = $1", [id]);
+    return rows[0] ?? null;
+  }
+  async create(data: { email: string; name: string }) {
+    const rows = await this.db.query<{ id: string }>("INSERT INTO users (email, name) VALUES ($1, $2) RETURNING id", [data.email, data.name]);
+    return rows[0];
+  }
+}`,
+  usage: `// Application bootstrap
+const container = createContainer({
+  dbUrl: process.env.DATABASE_URL!,
+  logLevel: "info",
+});
+
+// Resolve services (singletons are cached)
+const userRepo = container.resolve<UserRepository>(TOKENS.UserRepository);
+const user = await userRepo.findById("usr_123");
+
+// In tests: override registrations
+container.register(TOKENS.Database, () => mockDatabase, "singleton");`,
+};
+
+## Overview
+
+A lightweight dependency injection container that manages service lifetimes and dependencies without decorators or reflection. Services are registered with factory functions and resolved lazily, making it easy to swap implementations for testing.
+
+## Code
+
+```typescript
+export class Container {
+  private registrations = new Map<string, Registration<unknown>>();
+
+  register<T>(token: string, factory: Factory<T>, scope: Scope = "singleton"): this {
+    this.registrations.set(token, { factory, scope });
+    return this;
+  }
+
+  resolve<T>(token: string): T {
+    const registration = this.registrations.get(token);
+    if (registration.scope === "singleton") {
+      if (!registration.instance) {
+        registration.instance = registration.factory();
+      }
+      return registration.instance as T;
+    }
+    return registration.factory() as T;
+  }
+}
+```
+
+## Notes
+
+- Singleton scope creates one instance shared across all resolutions
+- Transient scope creates a new instance on every `resolve()` call
+- The composition root (`createContainer`) is the single place where all dependencies are wired
+- No decorators or `reflect-metadata` needed, keeping the runtime overhead minimal
+- For larger applications, consider hierarchical containers with parent/child scopes

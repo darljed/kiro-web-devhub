@@ -1,0 +1,200 @@
+---
+title: "Error Wrapping and Context"
+description: "Idiomatic Go error wrapping patterns that add context at each layer while preserving the ability to inspect the original error."
+category: "Go"
+language: "go"
+tags: ["go", "error-handling", "wrapping", "best-practices", "production-ready"]
+createdAt: "2025-04-05"
+updatedAt: "2025-04-20"
+---
+
+export const codeBlocks = {
+  main: `package main
+
+import (
+	"database/sql"
+	"errors"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"os"
+)
+
+// Domain errors - define once, use everywhere
+var (
+	ErrUserNotFound     = errors.New("user not found")
+	ErrDuplicateEmail   = errors.New("email already exists")
+	ErrInvalidInput     = errors.New("invalid input")
+	ErrServiceUnavail   = errors.New("service unavailable")
+)
+
+// Repository layer - wraps database errors with domain context
+type UserRepository struct {
+	db *sql.DB
+}
+
+func (r *UserRepository) FindByID(id string) (*User, error) {
+	var user User
+	err := r.db.QueryRow("SELECT id, email, name FROM users WHERE id = $1", id).
+		Scan(&user.ID, &user.Email, &user.Name)
+
+	if err != nil {
+		if errors.Is(err, sql.ErrNoRows) {
+			// Wrap domain error with context
+			return nil, fmt.Errorf("FindByID(%s): %w", id, ErrUserNotFound)
+		}
+		// Wrap unexpected errors
+		return nil, fmt.Errorf("FindByID(%s): querying database: %w", id, err)
+	}
+	return &user, nil
+}
+
+func (r *UserRepository) Create(user *User) error {
+	_, err := r.db.Exec(
+		"INSERT INTO users (id, email, name) VALUES ($1, $2, $3)",
+		user.ID, user.Email, user.Name,
+	)
+	if err != nil {
+		// Check for unique constraint violation
+		if isUniqueViolation(err) {
+			return fmt.Errorf("Create user %s: %w", user.Email, ErrDuplicateEmail)
+		}
+		return fmt.Errorf("Create user: inserting: %w", err)
+	}
+	return nil
+}
+
+// Service layer - adds business context
+type UserService struct {
+	repo   *UserRepository
+	logger *slog.Logger
+}
+
+func (s *UserService) GetUser(id string) (*User, error) {
+	user, err := s.repo.FindByID(id)
+	if err != nil {
+		// Don't re-wrap if it's already a domain error
+		if errors.Is(err, ErrUserNotFound) {
+			return nil, err // Pass through as-is
+		}
+		// Wrap infrastructure errors with service context
+		return nil, fmt.Errorf("UserService.GetUser: %w", err)
+	}
+	return user, nil
+}
+
+func (s *UserService) CreateUser(email, name string) (*User, error) {
+	if email == "" {
+		return nil, fmt.Errorf("CreateUser: email: %w", ErrInvalidInput)
+	}
+
+	user := &User{ID: generateID(), Email: email, Name: name}
+	if err := s.repo.Create(user); err != nil {
+		return nil, fmt.Errorf("UserService.CreateUser: %w", err)
+	}
+	return user, nil
+}
+
+// Handler layer - maps errors to HTTP responses
+func (h *Handler) GetUser(w http.ResponseWriter, r *http.Request) {
+	id := r.PathValue("id")
+	user, err := h.service.GetUser(id)
+	if err != nil {
+		h.handleError(w, r, err)
+		return
+	}
+	writeJSON(w, http.StatusOK, user)
+}
+
+func (h *Handler) handleError(w http.ResponseWriter, r *http.Request, err error) {
+	// Log full error chain for debugging
+	h.logger.Error("request failed",
+		"error", err.Error(),
+		"path", r.URL.Path,
+		"method", r.Method,
+	)
+
+	// Map domain errors to HTTP status codes
+	switch {
+	case errors.Is(err, ErrUserNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error": "User not found",
+		})
+	case errors.Is(err, ErrDuplicateEmail):
+		writeJSON(w, http.StatusConflict, map[string]string{
+			"error": "Email already registered",
+		})
+	case errors.Is(err, ErrInvalidInput):
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": err.Error(),
+		})
+	default:
+		// Don't expose internal errors to clients
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "Internal server error",
+		})
+	}
+}
+
+// Multi-error collection for batch operations
+type MultiError struct {
+	Errors []error
+}
+
+func (me *MultiError) Add(err error) {
+	if err != nil {
+		me.Errors = append(me.Errors, err)
+	}
+}
+
+func (me *MultiError) Err() error {
+	if len(me.Errors) == 0 {
+		return nil
+	}
+	return me
+}
+
+func (me *MultiError) Error() string {
+	msgs := make([]string, len(me.Errors))
+	for i, err := range me.Errors {
+		msgs[i] = err.Error()
+	}
+	return fmt.Sprintf("%d errors: [%s]", len(me.Errors), strings.Join(msgs, "; "))
+}
+
+// Helper types
+type User struct {
+	ID    string
+	Email string
+	Name  string
+}
+
+func generateID() string { return "usr_" + randomString(12) }
+func isUniqueViolation(err error) bool { return false } // DB-specific check
+func writeJSON(w http.ResponseWriter, status int, v any) {}
+func randomString(n int) string { return "" }`,
+};
+
+## Overview
+
+Idiomatic Go error handling where each layer adds context via `fmt.Errorf("%w", err)` while preserving the ability to inspect root causes with `errors.Is()`. The handler layer maps domain errors to HTTP responses without leaking implementation details.
+
+## Code
+
+```go
+// Repository wraps with context
+return nil, fmt.Errorf("FindByID(%s): %w", id, ErrUserNotFound)
+
+// Handler inspects domain errors
+if errors.Is(err, ErrUserNotFound) {
+    w.WriteHeader(http.StatusNotFound)
+}
+```
+
+## Notes
+
+- `%w` verb creates an error chain that `errors.Is()` and `errors.As()` can traverse
+- Define domain errors as package-level `var` declarations (sentinel errors)
+- Each layer adds just enough context to trace the error path without redundancy
+- Never expose raw internal errors to API clients (security and UX concern)
+- Use `errors.Join()` (Go 1.20+) for wrapping multiple errors simultaneously

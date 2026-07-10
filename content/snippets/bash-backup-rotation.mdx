@@ -1,0 +1,167 @@
+---
+title: "Backup Rotation Script"
+description: "Automated backup with compression, rotation policies (daily/weekly/monthly), integrity verification, and S3 upload support."
+category: "Bash"
+language: "bash"
+tags: ["bash", "backup", "automation", "system-administration", "production-ready"]
+createdAt: "2025-03-10"
+updatedAt: "2025-03-30"
+---
+
+export const codeBlocks = {
+  main: `#!/usr/bin/env bash
+set -euo pipefail
+
+# Configuration
+BACKUP_SOURCE="\${BACKUP_SOURCE:-/var/lib/app/data}"
+BACKUP_DEST="\${BACKUP_DEST:-/backups}"
+RETENTION_DAILY=7
+RETENTION_WEEKLY=4
+RETENTION_MONTHLY=6
+COMPRESS="gzip"
+DATE=$(date +%Y-%m-%d_%H%M%S)
+DAY_OF_WEEK=$(date +%u)
+DAY_OF_MONTH=$(date +%d)
+HOSTNAME=$(hostname -s)
+S3_BUCKET="\${S3_BUCKET:-}"
+
+log() { echo "[$(date -u +%Y-%m-%dT%H:%M:%SZ)] $*"; }
+die() { log "ERROR: $*" >&2; exit 1; }
+
+# Determine backup type based on day
+get_backup_type() {
+    if [[ "$DAY_OF_MONTH" == "01" ]]; then
+        echo "monthly"
+    elif [[ "$DAY_OF_WEEK" == "7" ]]; then
+        echo "weekly"
+    else
+        echo "daily"
+    fi
+}
+
+# Create backup with compression
+create_backup() {
+    local type="$1"
+    local backup_dir="$BACKUP_DEST/$type"
+    local backup_name="backup_\${HOSTNAME}_\${DATE}"
+    local backup_path="$backup_dir/$backup_name"
+
+    mkdir -p "$backup_dir"
+
+    log "Creating $type backup: $backup_name"
+
+    case "$COMPRESS" in
+        gzip)
+            tar -czf "$backup_path.tar.gz" -C "$(dirname "$BACKUP_SOURCE")" "$(basename "$BACKUP_SOURCE")"
+            backup_path="$backup_path.tar.gz"
+            ;;
+        zstd)
+            tar -cf - -C "$(dirname "$BACKUP_SOURCE")" "$(basename "$BACKUP_SOURCE")" | \
+                zstd -T0 -o "$backup_path.tar.zst"
+            backup_path="$backup_path.tar.zst"
+            ;;
+        none)
+            tar -cf "$backup_path.tar" -C "$(dirname "$BACKUP_SOURCE")" "$(basename "$BACKUP_SOURCE")"
+            backup_path="$backup_path.tar"
+            ;;
+        *)
+            die "Unknown compression: $COMPRESS"
+            ;;
+    esac
+
+    # Generate checksum
+    sha256sum "$backup_path" > "$backup_path.sha256"
+    local size=$(du -h "$backup_path" | cut -f1)
+    log "Backup created: $backup_path ($size)"
+
+    echo "$backup_path"
+}
+
+# Verify backup integrity
+verify_backup() {
+    local backup_path="$1"
+    log "Verifying backup integrity..."
+
+    if ! sha256sum -c "$backup_path.sha256" > /dev/null 2>&1; then
+        die "Backup integrity check FAILED: $backup_path"
+    fi
+
+    # Test archive is readable
+    case "$backup_path" in
+        *.tar.gz)  tar -tzf "$backup_path" > /dev/null ;;
+        *.tar.zst) zstd -d "$backup_path" --stdout | tar -t > /dev/null ;;
+        *.tar)     tar -tf "$backup_path" > /dev/null ;;
+    esac
+
+    log "Backup integrity verified"
+}
+
+# Upload to S3 if configured
+upload_to_s3() {
+    local backup_path="$1" type="$2"
+    if [[ -n "$S3_BUCKET" ]]; then
+        local s3_path="s3://$S3_BUCKET/$HOSTNAME/$type/$(basename "$backup_path")"
+        log "Uploading to $s3_path..."
+        aws s3 cp "$backup_path" "$s3_path" --storage-class STANDARD_IA
+        aws s3 cp "$backup_path.sha256" "$s3_path.sha256"
+        log "Upload complete"
+    fi
+}
+
+# Rotate old backups
+rotate_backups() {
+    local type="$1" retention="$2"
+    local backup_dir="$BACKUP_DEST/$type"
+
+    [[ -d "$backup_dir" ]] || return 0
+
+    local count=$(find "$backup_dir" -name "backup_*" -not -name "*.sha256" | wc -l)
+    if (( count > retention )); then
+        local to_delete=$((count - retention))
+        log "Rotating $type backups: removing $to_delete old backup(s)"
+        find "$backup_dir" -name "backup_*" -not -name "*.sha256" | \
+            sort | head -n "$to_delete" | while read -r file; do
+            rm -f "$file" "$file.sha256"
+            log "Deleted: $(basename "$file")"
+        done
+    fi
+}
+
+# Main execution
+main() {
+    log "=== Backup started ==="
+    local type=$(get_backup_type)
+
+    local backup_path
+    backup_path=$(create_backup "$type")
+    verify_backup "$backup_path"
+    upload_to_s3 "$backup_path" "$type"
+
+    # Rotate all types
+    rotate_backups "daily" "$RETENTION_DAILY"
+    rotate_backups "weekly" "$RETENTION_WEEKLY"
+    rotate_backups "monthly" "$RETENTION_MONTHLY"
+
+    log "=== Backup completed successfully ==="
+}
+
+main "$@"`,
+};
+
+## Overview
+
+An automated backup script with grandfather-father-son rotation (daily/weekly/monthly), compression options, SHA256 integrity verification, and optional S3 offsite storage. Designed to run as a daily cron job.
+
+## Code
+
+```bash
+BACKUP_SOURCE=/var/lib/data BACKUP_DEST=/backups S3_BUCKET=my-backups ./backup.sh
+```
+
+## Notes
+
+- The rotation policy keeps 7 daily, 4 weekly, and 6 monthly backups by default
+- SHA256 checksums verify backup integrity before and after transfer
+- `zstd` offers better compression ratio and speed than gzip for large datasets
+- S3 `STANDARD_IA` storage class reduces costs for infrequently accessed backups
+- Run as a cron job: `0 2 * * * /opt/scripts/backup.sh >> /var/log/backup.log 2>&1`

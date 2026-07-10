@@ -1,0 +1,125 @@
+---
+title: "Liveness and Readiness Probes"
+description: "Comprehensive health probe configuration for Kubernetes with startup probes, graceful shutdown, and probe-driven traffic management."
+category: "Kubernetes"
+language: "yaml"
+tags: ["kubernetes", "health-checks", "probes", "reliability", "production-ready"]
+createdAt: "2025-03-25"
+updatedAt: "2025-04-10"
+---
+
+export const codeBlocks = {
+  main: `apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web-service
+  namespace: production
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: web-service
+  template:
+    metadata:
+      labels:
+        app: web-service
+    spec:
+      terminationGracePeriodSeconds: 60
+      containers:
+        - name: web
+          image: registry.example.com/web-service:v1.5.0
+          ports:
+            - containerPort: 8080
+              name: http
+            - containerPort: 9090
+              name: metrics
+          env:
+            - name: SHUTDOWN_TIMEOUT
+              value: "55"
+
+          # Startup probe: allows slow startup without killing the container
+          # Only runs until first success, then liveness/readiness take over
+          startupProbe:
+            httpGet:
+              path: /healthz/startup
+              port: http
+            failureThreshold: 30
+            periodSeconds: 2
+            # Total startup budget: 30 * 2 = 60 seconds
+
+          # Readiness probe: gates traffic routing
+          # Failing = removed from Service endpoints (no traffic)
+          readinessProbe:
+            httpGet:
+              path: /healthz/ready
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 5
+            successThreshold: 2
+            failureThreshold: 3
+            timeoutSeconds: 3
+
+          # Liveness probe: detects deadlocks and hung processes
+          # Failing = container restart
+          livenessProbe:
+            httpGet:
+              path: /healthz/live
+              port: http
+            initialDelaySeconds: 0
+            periodSeconds: 10
+            failureThreshold: 3
+            timeoutSeconds: 5
+
+          resources:
+            requests:
+              cpu: "200m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+
+          lifecycle:
+            preStop:
+              exec:
+                # Give load balancers time to deregister before shutting down
+                command: ["sh", "-c", "sleep 10"]
+
+---
+# PodDisruptionBudget ensures minimum availability during maintenance
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web-service-pdb
+  namespace: production
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: web-service`,
+};
+
+## Overview
+
+Kubernetes probe configuration that distinguishes between startup delays, readiness for traffic, and liveness for deadlock detection. Combined with graceful shutdown and PodDisruptionBudgets, this ensures zero-downtime operations.
+
+## Code
+
+```yaml
+startupProbe:     # Am I done starting? (checked first)
+  failureThreshold: 30
+  periodSeconds: 2
+readinessProbe:   # Can I receive traffic? (ongoing)
+  successThreshold: 2
+  failureThreshold: 3
+livenessProbe:    # Am I deadlocked? (restart if failing)
+  failureThreshold: 3
+```
+
+## Notes
+
+- Startup probe prevents liveness probe from killing slow-starting containers (JVM, ML models)
+- Readiness failure removes the pod from Service endpoints (traffic stops, no restart)
+- Liveness failure triggers a container restart (use only for unrecoverable states like deadlocks)
+- `preStop` sleep gives ingress controllers time to remove the pod from their routing tables
+- `terminationGracePeriodSeconds` must exceed preStop sleep + application drain time
+- PodDisruptionBudget prevents voluntary evictions (node drain) from taking all pods offline

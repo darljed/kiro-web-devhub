@@ -1,0 +1,139 @@
+---
+title: "Fluent Builder Pattern"
+description: "A type-safe builder pattern using method chaining with conditional required fields enforced at compile time."
+category: "TypeScript"
+language: "typescript"
+tags: ["typescript", "design-patterns", "builder", "production-ready"]
+createdAt: "2025-01-22"
+updatedAt: "2025-02-15"
+---
+
+export const codeBlocks = {
+  main: `interface HttpRequestConfig {
+  url: string;
+  method: "GET" | "POST" | "PUT" | "PATCH" | "DELETE";
+  headers: Record<string, string>;
+  body?: unknown;
+  timeout: number;
+  retries: number;
+  auth?: { type: "bearer"; token: string } | { type: "basic"; username: string; password: string };
+}
+
+type RequiredFields = "url" | "method";
+type BuilderState = Partial<Record<RequiredFields, true>>;
+
+class HttpRequestBuilder<State extends BuilderState = {}> {
+  private config: Partial<HttpRequestConfig> = {
+    headers: {},
+    timeout: 30000,
+    retries: 0,
+  };
+
+  url(url: string): HttpRequestBuilder<State & { url: true }> {
+    this.config.url = url;
+    return this as unknown as HttpRequestBuilder<State & { url: true }>;
+  }
+
+  method(method: HttpRequestConfig["method"]): HttpRequestBuilder<State & { method: true }> {
+    this.config.method = method;
+    return this as unknown as HttpRequestBuilder<State & { method: true }>;
+  }
+
+  header(key: string, value: string): this {
+    this.config.headers = { ...this.config.headers, [key]: value };
+    return this;
+  }
+
+  json(data: unknown): this {
+    this.config.body = data;
+    this.config.headers = {
+      ...this.config.headers,
+      "Content-Type": "application/json",
+    };
+    return this;
+  }
+
+  timeout(ms: number): this {
+    this.config.timeout = ms;
+    return this;
+  }
+
+  retries(count: number): this {
+    this.config.retries = count;
+    return this;
+  }
+
+  bearerAuth(token: string): this {
+    this.config.auth = { type: "bearer", token };
+    this.config.headers = {
+      ...this.config.headers,
+      Authorization: \`Bearer \${token}\`,
+    };
+    return this;
+  }
+
+  basicAuth(username: string, password: string): this {
+    this.config.auth = { type: "basic", username, password };
+    const encoded = btoa(\`\${username}:\${password}\`);
+    this.config.headers = {
+      ...this.config.headers,
+      Authorization: \`Basic \${encoded}\`,
+    };
+    return this;
+  }
+
+  build(this: HttpRequestBuilder<{ url: true; method: true }>): HttpRequestConfig {
+    return this.config as HttpRequestConfig;
+  }
+}
+
+export function request(): HttpRequestBuilder {
+  return new HttpRequestBuilder();
+}`,
+  usage: `// This compiles - all required fields are set
+const req = request()
+  .url("https://api.example.com/users")
+  .method("POST")
+  .json({ name: "Alice", email: "alice@example.com" })
+  .bearerAuth(process.env.API_TOKEN!)
+  .timeout(5000)
+  .retries(3)
+  .build();
+
+// This would NOT compile - missing .method()
+// const bad = request().url("/api").build();
+// Error: Property 'build' does not exist on type 'HttpRequestBuilder<{ url: true }>'`,
+};
+
+## Overview
+
+A builder pattern that uses TypeScript's type system to enforce required fields at compile time. The `build()` method is only available when all required fields have been set, preventing runtime errors from incomplete configurations.
+
+## Code
+
+```typescript
+class HttpRequestBuilder<State extends BuilderState = {}> {
+  url(url: string): HttpRequestBuilder<State & { url: true }> {
+    this.config.url = url;
+    return this as unknown as HttpRequestBuilder<State & { url: true }>;
+  }
+
+  method(method: HttpRequestConfig["method"]): HttpRequestBuilder<State & { method: true }> {
+    this.config.method = method;
+    return this as unknown as HttpRequestBuilder<State & { method: true }>;
+  }
+
+  // build() is only callable when State includes both url and method
+  build(this: HttpRequestBuilder<{ url: true; method: true }>): HttpRequestConfig {
+    return this.config as HttpRequestConfig;
+  }
+}
+```
+
+## Notes
+
+- The `State` generic parameter tracks which required fields have been set
+- `build()` uses a `this` parameter type to restrict when it can be called
+- Optional methods like `header()`, `timeout()` return `this` without modifying the state type
+- This pattern eliminates "required field missing" runtime errors entirely
+- Works well for complex configuration objects with many optional and few required fields

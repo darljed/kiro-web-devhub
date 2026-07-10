@@ -1,0 +1,149 @@
+---
+title: "Type-Safe Singleton Pattern"
+description: "A modern TypeScript singleton implementation using private constructors and lazy initialization for service instances."
+category: "TypeScript"
+language: "typescript"
+tags: ["typescript", "design-patterns", "singleton", "production-ready"]
+createdAt: "2025-01-15"
+updatedAt: "2025-02-05"
+---
+
+export const codeBlocks = {
+  main: `export class DatabasePool {
+  private static instance: DatabasePool | null = null;
+  private readonly connections: Map<string, Connection> = new Map();
+  private readonly maxConnections: number;
+
+  private constructor(private readonly config: PoolConfig) {
+    this.maxConnections = config.maxConnections ?? 10;
+  }
+
+  static getInstance(config?: PoolConfig): DatabasePool {
+    if (!DatabasePool.instance) {
+      if (!config) {
+        throw new Error("DatabasePool must be initialized with config on first call");
+      }
+      DatabasePool.instance = new DatabasePool(config);
+    }
+    return DatabasePool.instance;
+  }
+
+  static resetInstance(): void {
+    if (DatabasePool.instance) {
+      DatabasePool.instance.closeAll();
+      DatabasePool.instance = null;
+    }
+  }
+
+  async getConnection(key: string): Promise<Connection> {
+    if (this.connections.has(key)) {
+      const conn = this.connections.get(key)!;
+      if (conn.isAlive()) return conn;
+      this.connections.delete(key);
+    }
+
+    if (this.connections.size >= this.maxConnections) {
+      await this.evictIdle();
+    }
+
+    const conn = await this.createConnection(key);
+    this.connections.set(key, conn);
+    return conn;
+  }
+
+  private async createConnection(key: string): Promise<Connection> {
+    const conn = new Connection(this.config.connectionString, key);
+    await conn.connect();
+    return conn;
+  }
+
+  private async evictIdle(): Promise<void> {
+    const now = Date.now();
+    for (const [key, conn] of this.connections) {
+      if (now - conn.lastUsed > this.config.idleTimeoutMs) {
+        await conn.close();
+        this.connections.delete(key);
+      }
+    }
+  }
+
+  private closeAll(): void {
+    for (const [, conn] of this.connections) {
+      conn.close();
+    }
+    this.connections.clear();
+  }
+
+  get activeConnections(): number {
+    return this.connections.size;
+  }
+}
+
+interface PoolConfig {
+  connectionString: string;
+  maxConnections?: number;
+  idleTimeoutMs: number;
+}
+
+interface Connection {
+  isAlive(): boolean;
+  connect(): Promise<void>;
+  close(): Promise<void> | void;
+  lastUsed: number;
+}`,
+  usage: `// Initialize once at application startup
+const pool = DatabasePool.getInstance({
+  connectionString: process.env.DATABASE_URL!,
+  maxConnections: 20,
+  idleTimeoutMs: 30_000,
+});
+
+// Use anywhere in the application
+const conn = await DatabasePool.getInstance().getConnection("users-query");
+
+// Reset for testing
+afterEach(() => {
+  DatabasePool.resetInstance();
+});`,
+};
+
+## Overview
+
+A thread-safe singleton pattern for managing shared resources like database connection pools. Uses TypeScript's private constructor to enforce single-instance semantics, with a static `resetInstance` method to support clean teardown in tests.
+
+## Code
+
+```typescript
+export class DatabasePool {
+  private static instance: DatabasePool | null = null;
+
+  private constructor(private readonly config: PoolConfig) {
+    this.maxConnections = config.maxConnections ?? 10;
+  }
+
+  static getInstance(config?: PoolConfig): DatabasePool {
+    if (!DatabasePool.instance) {
+      if (!config) {
+        throw new Error("DatabasePool must be initialized with config on first call");
+      }
+      DatabasePool.instance = new DatabasePool(config);
+    }
+    return DatabasePool.instance;
+  }
+
+  static resetInstance(): void {
+    if (DatabasePool.instance) {
+      DatabasePool.instance.closeAll();
+      DatabasePool.instance = null;
+    }
+  }
+}
+```
+
+## Notes
+
+- Private constructor prevents direct instantiation with `new`
+- `resetInstance()` is essential for test isolation to avoid state leaking between test suites
+- First call requires configuration; subsequent calls return the cached instance
+- Consider dependency injection containers as an alternative in larger applications
+- In serverless environments, singletons persist across warm starts but not cold starts

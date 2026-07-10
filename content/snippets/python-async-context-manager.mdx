@@ -1,0 +1,207 @@
+---
+title: "Async Context Managers"
+description: "Production patterns for async context managers including connection pools, distributed locks, and resource lifecycle management."
+category: "Python"
+language: "python"
+tags: ["python", "async", "context-manager", "resource-management", "production-ready"]
+createdAt: "2025-03-10"
+updatedAt: "2025-03-30"
+---
+
+export const codeBlocks = {
+  main: `import asyncio
+import time
+from contextlib import asynccontextmanager
+from typing import AsyncIterator, AsyncGenerator, TypeVar
+from dataclasses import dataclass
+
+T = TypeVar("T")
+
+
+@dataclass
+class PooledConnection:
+    """Represents a database connection from the pool."""
+    id: int
+    created_at: float
+    last_used: float = 0.0
+    in_use: bool = False
+
+    async def execute(self, query: str, params: tuple = ()) -> list[dict]:
+        """Execute a query on this connection."""
+        self.last_used = time.time()
+        # Simulate query execution
+        await asyncio.sleep(0.01)
+        return []
+
+    async def close(self) -> None:
+        pass
+
+
+class AsyncConnectionPool:
+    """Async connection pool with health checking and auto-recovery."""
+
+    def __init__(
+        self,
+        dsn: str,
+        min_size: int = 5,
+        max_size: int = 20,
+        max_idle_time: float = 300.0,
+    ):
+        self.dsn = dsn
+        self.min_size = min_size
+        self.max_size = max_size
+        self.max_idle_time = max_idle_time
+        self._pool: asyncio.Queue[PooledConnection] = asyncio.Queue(maxsize=max_size)
+        self._all_connections: list[PooledConnection] = []
+        self._semaphore = asyncio.Semaphore(max_size)
+        self._closed = False
+        self._next_id = 0
+
+    async def initialize(self) -> None:
+        """Pre-create minimum connections."""
+        for _ in range(self.min_size):
+            conn = await self._create_connection()
+            await self._pool.put(conn)
+
+    async def _create_connection(self) -> PooledConnection:
+        self._next_id += 1
+        conn = PooledConnection(id=self._next_id, created_at=time.time())
+        self._all_connections.append(conn)
+        return conn
+
+    @asynccontextmanager
+    async def acquire(self, timeout: float = 10.0) -> AsyncIterator[PooledConnection]:
+        """Acquire a connection from the pool with timeout."""
+        if self._closed:
+            raise RuntimeError("Pool is closed")
+
+        async with asyncio.timeout(timeout):
+            await self._semaphore.acquire()
+
+        try:
+            try:
+                conn = self._pool.get_nowait()
+            except asyncio.QueueEmpty:
+                conn = await self._create_connection()
+
+            conn.in_use = True
+            conn.last_used = time.time()
+
+            try:
+                yield conn
+            except Exception:
+                # Don't return bad connections to pool
+                await conn.close()
+                self._all_connections.remove(conn)
+                raise
+            else:
+                conn.in_use = False
+                await self._pool.put(conn)
+        finally:
+            self._semaphore.release()
+
+    async def close(self) -> None:
+        """Close all connections and shut down the pool."""
+        self._closed = True
+        for conn in self._all_connections:
+            await conn.close()
+        self._all_connections.clear()
+
+    @property
+    def stats(self) -> dict:
+        return {
+            "total": len(self._all_connections),
+            "available": self._pool.qsize(),
+            "in_use": sum(1 for c in self._all_connections if c.in_use),
+        }
+
+
+@asynccontextmanager
+async def managed_pool(dsn: str, **kwargs) -> AsyncIterator[AsyncConnectionPool]:
+    """Lifecycle manager for connection pool."""
+    pool = AsyncConnectionPool(dsn, **kwargs)
+    await pool.initialize()
+    try:
+        yield pool
+    finally:
+        await pool.close()
+
+
+# Distributed lock using async context manager
+@asynccontextmanager
+async def distributed_lock(
+    name: str,
+    timeout: float = 30.0,
+    retry_interval: float = 0.1,
+) -> AsyncGenerator[None, None]:
+    """Acquire a distributed lock with automatic release.
+
+    In production, back this with Redis or etcd.
+    """
+    lock_key = f"lock:{name}"
+    acquired = False
+    deadline = time.time() + timeout
+
+    while time.time() < deadline:
+        # Attempt to acquire (simulate with asyncio.Lock for demo)
+        acquired = await _try_acquire_lock(lock_key)
+        if acquired:
+            break
+        await asyncio.sleep(retry_interval)
+
+    if not acquired:
+        raise TimeoutError(f"Could not acquire lock '{name}' within {timeout}s")
+
+    try:
+        yield
+    finally:
+        await _release_lock(lock_key)
+
+
+async def _try_acquire_lock(key: str) -> bool:
+    # In production: Redis SET NX EX
+    return True
+
+async def _release_lock(key: str) -> None:
+    # In production: Redis DEL with Lua script for safe release
+    pass`,
+  usage: `# Connection pool lifecycle
+async def main():
+    async with managed_pool("postgresql://localhost/mydb", min_size=5, max_size=20) as pool:
+        # Acquire connection with automatic return
+        async with pool.acquire() as conn:
+            results = await conn.execute("SELECT * FROM users WHERE active = $1", (True,))
+
+        # Parallel queries using the same pool
+        async def fetch_user(user_id: str):
+            async with pool.acquire(timeout=5.0) as conn:
+                return await conn.execute("SELECT * FROM users WHERE id = $1", (user_id,))
+
+        users = await asyncio.gather(*[fetch_user(uid) for uid in user_ids])
+
+    # Pool is automatically closed here
+
+# Distributed lock
+async with distributed_lock("process-payment", timeout=10.0):
+    await process_payment(order_id)`,
+};
+
+## Overview
+
+Async context managers for lifecycle management of shared resources. The connection pool pattern ensures connections are returned to the pool even when exceptions occur, while the distributed lock pattern provides mutual exclusion across async tasks or processes.
+
+## Code
+
+```python
+async with managed_pool("postgres://...") as pool:
+    async with pool.acquire() as conn:
+        await conn.execute("SELECT 1")
+```
+
+## Notes
+
+- `asynccontextmanager` from contextlib simplifies creation of async context managers
+- The semaphore limits total concurrent connections regardless of pool/create balance
+- Bad connections (those that raised) are discarded rather than returned to the pool
+- `asyncio.timeout()` (Python 3.11+) provides clean timeout semantics with proper cancellation
+- Stack multiple context managers with `async with` for composed resource acquisition

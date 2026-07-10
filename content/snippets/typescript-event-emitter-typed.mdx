@@ -1,0 +1,122 @@
+---
+title: "Typed EventEmitter for Node.js"
+description: "Extend Node.js EventEmitter with full TypeScript type safety for event names and listener signatures."
+category: "TypeScript"
+language: "typescript"
+tags: ["typescript", "nodejs", "events", "type-safety", "production-ready"]
+createdAt: "2025-02-10"
+updatedAt: "2025-03-01"
+---
+
+export const codeBlocks = {
+  main: `import { EventEmitter } from "node:events";
+
+// Generic type-safe wrapper around Node.js EventEmitter
+export interface TypedEmitter<TEvents extends Record<string, (...args: any[]) => void>> {
+  on<K extends keyof TEvents>(event: K, listener: TEvents[K]): this;
+  once<K extends keyof TEvents>(event: K, listener: TEvents[K]): this;
+  off<K extends keyof TEvents>(event: K, listener: TEvents[K]): this;
+  emit<K extends keyof TEvents>(event: K, ...args: Parameters<TEvents[K]>): boolean;
+  removeAllListeners<K extends keyof TEvents>(event?: K): this;
+  listeners<K extends keyof TEvents>(event: K): TEvents[K][];
+  listenerCount<K extends keyof TEvents>(event: K): number;
+}
+
+export class TypedEventEmitter<
+  TEvents extends Record<string, (...args: any[]) => void>
+> extends (EventEmitter as new () => TypedEmitter<any>) {
+  constructor() {
+    super();
+  }
+}
+
+// Application example: a typed WebSocket connection manager
+interface ConnectionEvents {
+  connect: (clientId: string, metadata: { ip: string; userAgent: string }) => void;
+  disconnect: (clientId: string, reason: string) => void;
+  message: (clientId: string, payload: Buffer, timestamp: number) => void;
+  error: (clientId: string, error: Error) => void;
+  heartbeat: (clientId: string) => void;
+}
+
+export class ConnectionManager extends TypedEventEmitter<ConnectionEvents> {
+  private connections = new Map<string, { lastSeen: number; metadata: { ip: string; userAgent: string } }>();
+
+  addConnection(clientId: string, metadata: { ip: string; userAgent: string }): void {
+    this.connections.set(clientId, { lastSeen: Date.now(), metadata });
+    this.emit("connect", clientId, metadata);
+  }
+
+  removeConnection(clientId: string, reason: string): void {
+    this.connections.delete(clientId);
+    this.emit("disconnect", clientId, reason);
+  }
+
+  handleMessage(clientId: string, payload: Buffer): void {
+    const conn = this.connections.get(clientId);
+    if (!conn) {
+      this.emit("error", clientId, new Error("Unknown client"));
+      return;
+    }
+    conn.lastSeen = Date.now();
+    this.emit("message", clientId, payload, Date.now());
+  }
+
+  checkHeartbeats(timeoutMs: number): void {
+    const now = Date.now();
+    for (const [clientId, conn] of this.connections) {
+      if (now - conn.lastSeen > timeoutMs) {
+        this.removeConnection(clientId, "heartbeat timeout");
+      } else {
+        this.emit("heartbeat", clientId);
+      }
+    }
+  }
+
+  get activeConnections(): number {
+    return this.connections.size;
+  }
+}`,
+  usage: `const manager = new ConnectionManager();
+
+// Full type inference on listener parameters
+manager.on("connect", (clientId, metadata) => {
+  console.log(\`Client \${clientId} connected from \${metadata.ip}\`);
+});
+
+manager.on("message", (clientId, payload, timestamp) => {
+  console.log(\`[\${timestamp}] \${clientId}: \${payload.toString()}\`);
+});
+
+manager.on("error", (clientId, error) => {
+  console.error(\`Error for \${clientId}: \${error.message}\`);
+});
+
+// Type error: wrong argument types
+// manager.emit("connect", 123); // Error: number is not assignable to string`,
+};
+
+## Overview
+
+A pattern for adding full TypeScript type safety to Node.js EventEmitter. By defining event signatures in an interface, you get compile-time checking for event names, listener parameter types, and emit argument types.
+
+## Code
+
+```typescript
+export interface TypedEmitter<TEvents extends Record<string, (...args: any[]) => void>> {
+  on<K extends keyof TEvents>(event: K, listener: TEvents[K]): this;
+  emit<K extends keyof TEvents>(event: K, ...args: Parameters<TEvents[K]>): boolean;
+}
+
+export class TypedEventEmitter<
+  TEvents extends Record<string, (...args: any[]) => void>
+> extends (EventEmitter as new () => TypedEmitter<any>) {}
+```
+
+## Notes
+
+- The cast `EventEmitter as new () => TypedEmitter<any>` bridges untyped EventEmitter to our typed interface
+- Event listener signatures are defined as function types in the events interface
+- `Parameters<TEvents[K]>` extracts the argument tuple for type-safe `emit()` calls
+- This pattern works with any class that extends EventEmitter (HTTP servers, streams, etc.)
+- Consider `EventTarget` for browser environments where EventEmitter is unavailable

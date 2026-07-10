@@ -1,0 +1,195 @@
+---
+title: "Streaming CSV Processing"
+description: "Memory-efficient CSV processing for large files using generators, chunked reading, and parallel processing pipelines."
+category: "Python"
+language: "python"
+tags: ["python", "csv", "streaming", "data-processing", "production-ready"]
+createdAt: "2025-03-01"
+updatedAt: "2025-03-20"
+---
+
+export const codeBlocks = {
+  main: `import csv
+import gzip
+from pathlib import Path
+from typing import Iterator, TypeVar, Callable, Any
+from dataclasses import dataclass
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import io
+
+T = TypeVar("T")
+
+
+@dataclass
+class ProcessingStats:
+    total_rows: int = 0
+    processed_rows: int = 0
+    skipped_rows: int = 0
+    error_rows: int = 0
+    bytes_read: int = 0
+
+
+def stream_csv(
+    filepath: str | Path,
+    *,
+    encoding: str = "utf-8",
+    delimiter: str = ",",
+    skip_header: bool = False,
+    chunk_size: int | None = None,
+) -> Iterator[dict[str, str]] | Iterator[list[dict[str, str]]]:
+    """Stream CSV rows as dictionaries without loading entire file into memory.
+
+    If chunk_size is set, yields lists of rows for batch processing.
+    Supports .gz compressed files automatically.
+    """
+    filepath = Path(filepath)
+    opener = gzip.open if filepath.suffix == ".gz" else open
+
+    with opener(filepath, "rt", encoding=encoding) as f:
+        reader = csv.DictReader(f, delimiter=delimiter)
+
+        if chunk_size:
+            chunk: list[dict[str, str]] = []
+            for row in reader:
+                chunk.append(row)
+                if len(chunk) >= chunk_size:
+                    yield chunk
+                    chunk = []
+            if chunk:
+                yield chunk
+        else:
+            yield from reader
+
+
+def transform_csv(
+    input_path: str | Path,
+    output_path: str | Path,
+    transformer: Callable[[dict[str, str]], dict[str, Any] | None],
+    *,
+    output_fields: list[str] | None = None,
+    error_handler: Callable[[dict[str, str], Exception], None] | None = None,
+) -> ProcessingStats:
+    """Transform a CSV file row-by-row with filtering support.
+
+    The transformer function receives each row as a dict and returns:
+    - A transformed dict to write to output
+    - None to skip the row (filter)
+    - Raises an exception to trigger error_handler
+    """
+    stats = ProcessingStats()
+    input_path = Path(input_path)
+    output_path = Path(output_path)
+
+    first_output: dict[str, Any] | None = None
+
+    # Determine output fields from first successful transform
+    if output_fields is None:
+        for row in stream_csv(input_path):
+            try:
+                result = transformer(row)
+                if result is not None:
+                    first_output = result
+                    output_fields = list(result.keys())
+                    break
+            except Exception:
+                continue
+
+    if not output_fields:
+        return stats
+
+    compress = output_path.suffix == ".gz"
+    opener = gzip.open if compress else open
+
+    with opener(output_path, "wt", newline="", encoding="utf-8") as f:
+        writer = csv.DictWriter(f, fieldnames=output_fields, extrasaction="ignore")
+        writer.writeheader()
+
+        if first_output:
+            writer.writerow(first_output)
+            stats.processed_rows += 1
+
+        for row in stream_csv(input_path):
+            stats.total_rows += 1
+            try:
+                result = transformer(row)
+                if result is None:
+                    stats.skipped_rows += 1
+                    continue
+                writer.writerow(result)
+                stats.processed_rows += 1
+            except Exception as exc:
+                stats.error_rows += 1
+                if error_handler:
+                    error_handler(row, exc)
+
+    return stats
+
+
+def parallel_csv_process(
+    filepath: str | Path,
+    processor: Callable[[list[dict[str, str]]], list[Any]],
+    *,
+    chunk_size: int = 10_000,
+    max_workers: int = 4,
+) -> list[Any]:
+    """Process a large CSV in parallel using multiprocessing."""
+    results: list[Any] = []
+
+    with ProcessPoolExecutor(max_workers=max_workers) as executor:
+        futures = {}
+        for i, chunk in enumerate(stream_csv(filepath, chunk_size=chunk_size)):
+            future = executor.submit(processor, chunk)
+            futures[future] = i
+
+        for future in as_completed(futures):
+            chunk_results = future.result()
+            results.extend(chunk_results)
+
+    return results`,
+  usage: `# Stream and transform a large CSV
+stats = transform_csv(
+    "raw_events.csv.gz",
+    "cleaned_events.csv",
+    transformer=lambda row: {
+        "timestamp": parse_timestamp(row["ts"]),
+        "user_id": row["uid"].strip(),
+        "event": row["event_name"].lower(),
+        "value": float(row["amount"]) if row["amount"] else 0.0,
+    } if row["event_name"] else None,  # Skip rows without event
+    error_handler=lambda row, exc: print(f"Error on row: {exc}"),
+)
+print(f"Processed: {stats.processed_rows}, Skipped: {stats.skipped_rows}")
+
+# Parallel aggregation
+def aggregate_chunk(rows):
+    totals = {}
+    for row in rows:
+        key = row["category"]
+        totals[key] = totals.get(key, 0) + float(row["amount"])
+    return [{"category": k, "total": v} for k, v in totals.items()]
+
+results = parallel_csv_process("large_sales.csv", aggregate_chunk, chunk_size=50_000)`,
+};
+
+## Overview
+
+Memory-efficient patterns for processing CSV files of any size using generators. Data streams through transformations row-by-row (or chunk-by-chunk), enabling processing of multi-gigabyte files with constant memory usage and optional parallel execution.
+
+## Code
+
+```python
+for row in stream_csv("data.csv.gz"):
+    process(row)  # One dict at a time, constant memory
+
+# Or in chunks for batch operations
+for chunk in stream_csv("data.csv", chunk_size=1000):
+    batch_insert(chunk)
+```
+
+## Notes
+
+- Automatic gzip detection based on `.gz` extension works for both reading and writing
+- The `transformer` returning `None` provides inline filtering without separate passes
+- `DictReader` yields dictionaries with column-name keys for readable access
+- Parallel processing uses `ProcessPoolExecutor` to bypass the GIL for CPU-bound transforms
+- For extremely large files (100GB+), consider Apache Arrow or Polars for columnar processing

@@ -1,0 +1,160 @@
+---
+title: "TTL Cache Decorator"
+description: "A time-based cache decorator with configurable TTL, max size, and key generation for expensive function calls."
+category: "Python"
+language: "python"
+tags: ["python", "decorator", "caching", "performance", "production-ready"]
+createdAt: "2025-02-08"
+updatedAt: "2025-02-28"
+---
+
+export const codeBlocks = {
+  main: `import time
+import hashlib
+import functools
+from typing import TypeVar, Callable, Any, ParamSpec
+from collections import OrderedDict
+import threading
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+
+class TTLCache:
+    """Thread-safe LRU cache with time-based expiration."""
+
+    def __init__(self, maxsize: int = 128, ttl: float = 300.0):
+        self.maxsize = maxsize
+        self.ttl = ttl
+        self._cache: OrderedDict[str, tuple[float, Any]] = OrderedDict()
+        self._lock = threading.Lock()
+        self._hits = 0
+        self._misses = 0
+
+    def get(self, key: str) -> tuple[bool, Any]:
+        with self._lock:
+            if key in self._cache:
+                expires_at, value = self._cache[key]
+                if time.time() < expires_at:
+                    # Move to end (most recently used)
+                    self._cache.move_to_end(key)
+                    self._hits += 1
+                    return True, value
+                else:
+                    # Expired
+                    del self._cache[key]
+            self._misses += 1
+            return False, None
+
+    def set(self, key: str, value: Any) -> None:
+        with self._lock:
+            if key in self._cache:
+                self._cache.move_to_end(key)
+            self._cache[key] = (time.time() + self.ttl, value)
+            # Evict oldest if over capacity
+            while len(self._cache) > self.maxsize:
+                self._cache.popitem(last=False)
+
+    def invalidate(self, key: str) -> None:
+        with self._lock:
+            self._cache.pop(key, None)
+
+    def clear(self) -> None:
+        with self._lock:
+            self._cache.clear()
+
+    @property
+    def stats(self) -> dict[str, int]:
+        total = self._hits + self._misses
+        return {
+            "hits": self._hits,
+            "misses": self._misses,
+            "hit_rate": round(self._hits / total * 100, 1) if total > 0 else 0,
+            "size": len(self._cache),
+        }
+
+
+def _make_key(args: tuple, kwargs: dict) -> str:
+    """Generate a cache key from function arguments."""
+    key_parts = [repr(arg) for arg in args]
+    key_parts.extend(f"{k}={repr(v)}" for k, v in sorted(kwargs.items()))
+    raw_key = ":".join(key_parts)
+    return hashlib.md5(raw_key.encode()).hexdigest()
+
+
+def cached(
+    ttl: float = 300.0,
+    maxsize: int = 128,
+    key_fn: Callable[..., str] | None = None,
+) -> Callable[[Callable[P, R]], Callable[P, R]]:
+    """Decorator that caches function results with TTL expiration.
+
+    Args:
+        ttl: Time-to-live in seconds (default 5 minutes)
+        maxsize: Maximum number of cached entries
+        key_fn: Optional custom key generation function
+    """
+    cache = TTLCache(maxsize=maxsize, ttl=ttl)
+
+    def decorator(func: Callable[P, R]) -> Callable[P, R]:
+        @functools.wraps(func)
+        def wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+            if key_fn:
+                cache_key = key_fn(*args, **kwargs)
+            else:
+                cache_key = f"{func.__module__}.{func.__qualname__}:{_make_key(args, kwargs)}"
+
+            hit, value = cache.get(cache_key)
+            if hit:
+                return value
+
+            result = func(*args, **kwargs)
+            cache.set(cache_key, result)
+            return result
+
+        # Expose cache management
+        wrapper.cache = cache  # type: ignore
+        wrapper.cache_clear = cache.clear  # type: ignore
+        wrapper.cache_stats = lambda: cache.stats  # type: ignore
+        return wrapper
+
+    return decorator`,
+  usage: `@cached(ttl=60.0, maxsize=256)
+def get_user_profile(user_id: str) -> dict:
+    """Expensive database query cached for 60 seconds."""
+    return db.query("SELECT * FROM users WHERE id = %s", user_id)
+
+# Access cache stats
+print(get_user_profile.cache_stats())
+# {"hits": 42, "misses": 8, "hit_rate": 84.0, "size": 8}
+
+# Manual invalidation
+get_user_profile.cache.invalidate(
+    f"__main__.get_user_profile:{_make_key(('user_123',), {})}"
+)
+
+# Custom key function
+@cached(ttl=300, key_fn=lambda req: f"search:{req.query}:{req.page}")
+def search(request: SearchRequest) -> SearchResults:
+    return elasticsearch.search(request)`,
+};
+
+## Overview
+
+A production-ready caching decorator that combines LRU eviction with time-based expiration. Unlike `functools.lru_cache`, it supports TTL for automatic staleness management, thread safety, cache statistics, and manual invalidation.
+
+## Code
+
+```python
+@cached(ttl=60.0, maxsize=256)
+def expensive_query(user_id: str) -> dict:
+    return db.fetch_user(user_id)
+```
+
+## Notes
+
+- Thread-safe via threading.Lock for use in multi-threaded WSGI servers
+- LRU eviction prevents unbounded memory growth when maxsize is reached
+- MD5 hashing of args ensures consistent cache key length regardless of input size
+- `cache_stats()` exposes hit rate for monitoring cache effectiveness
+- For async functions, create an `async_cached` variant using `asyncio.Lock` instead

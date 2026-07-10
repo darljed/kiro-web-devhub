@@ -1,0 +1,106 @@
+---
+title: "Pivot and Unpivot Patterns"
+description: "SQL techniques for transforming rows to columns (pivot) and columns to rows (unpivot) for reporting and data reshaping."
+category: "SQL"
+language: "sql"
+tags: ["sql", "pivot", "unpivot", "reporting", "production-ready"]
+createdAt: "2025-05-01"
+updatedAt: "2025-05-15"
+---
+
+export const codeBlocks = {
+  main: `-- Pivot: Convert rows to columns using CASE + aggregation
+SELECT
+    product_category,
+    SUM(CASE WHEN EXTRACT(QUARTER FROM order_date) = 1 THEN revenue ELSE 0 END) AS q1_revenue,
+    SUM(CASE WHEN EXTRACT(QUARTER FROM order_date) = 2 THEN revenue ELSE 0 END) AS q2_revenue,
+    SUM(CASE WHEN EXTRACT(QUARTER FROM order_date) = 3 THEN revenue ELSE 0 END) AS q3_revenue,
+    SUM(CASE WHEN EXTRACT(QUARTER FROM order_date) = 4 THEN revenue ELSE 0 END) AS q4_revenue,
+    SUM(revenue) AS total_revenue,
+    ROUND(
+        (SUM(CASE WHEN EXTRACT(QUARTER FROM order_date) = 4 THEN revenue ELSE 0 END) -
+         SUM(CASE WHEN EXTRACT(QUARTER FROM order_date) = 3 THEN revenue ELSE 0 END)) * 100.0 /
+        NULLIF(SUM(CASE WHEN EXTRACT(QUARTER FROM order_date) = 3 THEN revenue ELSE 0 END), 0),
+        1
+    ) AS q4_vs_q3_growth_pct
+FROM orders
+WHERE EXTRACT(YEAR FROM order_date) = 2025
+GROUP BY product_category
+ORDER BY total_revenue DESC;
+
+-- Dynamic pivot using crosstab (PostgreSQL)
+-- Requires: CREATE EXTENSION IF NOT EXISTS tablefunc;
+SELECT *
+FROM crosstab(
+    'SELECT department, month, headcount
+     FROM staffing
+     ORDER BY department, month',
+    'SELECT DISTINCT month FROM staffing ORDER BY month'
+) AS ct(
+    department TEXT,
+    jan INT, feb INT, mar INT, apr INT, may INT, jun INT
+);
+
+-- Unpivot: Convert columns to rows using UNION ALL
+SELECT customer_id, 'email' AS channel, email_opens AS metric_value
+FROM customer_engagement
+UNION ALL
+SELECT customer_id, 'sms' AS channel, sms_clicks AS metric_value
+FROM customer_engagement
+UNION ALL
+SELECT customer_id, 'push' AS channel, push_interactions AS metric_value
+FROM customer_engagement
+ORDER BY customer_id, channel;
+
+-- Unpivot using LATERAL (PostgreSQL) - cleaner for many columns
+SELECT
+    ce.customer_id,
+    metrics.channel,
+    metrics.value
+FROM customer_engagement ce
+CROSS JOIN LATERAL (
+    VALUES
+        ('email', ce.email_opens),
+        ('sms', ce.sms_clicks),
+        ('push', ce.push_interactions),
+        ('in_app', ce.in_app_actions)
+) AS metrics(channel, value)
+WHERE metrics.value > 0
+ORDER BY ce.customer_id, metrics.channel;
+
+-- Pivot with multiple aggregations
+SELECT
+    region,
+    COUNT(*) FILTER (WHERE status = 'active') AS active_count,
+    COUNT(*) FILTER (WHERE status = 'churned') AS churned_count,
+    COUNT(*) FILTER (WHERE status = 'trial') AS trial_count,
+    ROUND(
+        COUNT(*) FILTER (WHERE status = 'active') * 100.0 / COUNT(*),
+        1
+    ) AS active_pct
+FROM customers
+GROUP BY region
+ORDER BY active_count DESC;`,
+};
+
+## Overview
+
+Techniques for reshaping data between row and column orientations. Pivoting converts category values into columns for cross-tab reports, while unpivoting normalizes wide tables into tall format for analysis and visualization.
+
+## Code
+
+```sql
+-- Pivot with CASE
+SUM(CASE WHEN quarter = 'Q1' THEN revenue END) AS q1
+
+-- Unpivot with LATERAL
+CROSS JOIN LATERAL (VALUES ('col1', t.col1), ('col2', t.col2)) AS u(name, value)
+```
+
+## Notes
+
+- CASE-based pivot works in all SQL databases (most portable approach)
+- `FILTER (WHERE ...)` is PostgreSQL syntax for conditional aggregation (cleaner than CASE)
+- LATERAL join unpivot is more maintainable than UNION ALL when adding/removing columns
+- `crosstab()` in PostgreSQL handles truly dynamic pivots where column count varies
+- For reporting tools, unpivoted (tall) format is usually preferred as it scales better

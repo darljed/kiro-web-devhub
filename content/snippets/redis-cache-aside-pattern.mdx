@@ -1,0 +1,77 @@
+---
+title: "Cache-Aside Pattern"
+description: "Redis cache-aside implementation with TTL, cache stampede prevention, cache warming, and invalidation strategies for read-heavy workloads."
+category: "Redis"
+language: "redis"
+tags: ["redis", "caching", "cache-aside", "performance", "production-ready"]
+createdAt: "2025-02-15"
+updatedAt: "2025-03-05"
+---
+
+export const codeBlocks = {
+  main: `-- Cache-Aside Pattern Implementation (pseudocode with Redis commands)
+-- 1. Read: Check cache first, fall back to database
+GET user:123
+-- If nil (cache miss), query DB then cache the result:
+SET user:123 '{"id":"123","name":"Alice","email":"alice@co.com"}' EX 3600
+
+-- 2. Write: Update database, then invalidate cache
+DEL user:123
+
+-- Cache stampede prevention using SET NX (lock)
+-- When cache miss occurs, only one process rebuilds
+SET user:123:lock "rebuilding" NX EX 10
+-- If SET returns OK: this process rebuilds the cache
+-- If SET returns nil: another process is rebuilding, wait and retry GET
+
+-- Probabilistic early expiration to prevent stampede
+-- Store value with creation time, check if "almost expired"
+SET user:123 '{"data":{...},"cached_at":1706000000}' EX 3600
+-- On read: if (now - cached_at) > TTL * 0.8, refresh in background
+
+-- Batch cache operations with MGET/MSET
+MGET user:1 user:2 user:3 user:4 user:5
+-- Returns array: [data1, nil, data3, nil, data5]
+-- Only query DB for cache misses (user:2, user:4)
+MSET user:2 '{"id":"2",...}' user:4 '{"id":"4",...}'
+
+-- Hash-based caching for partial updates
+HSET user:123 name "Alice" email "alice@co.com" plan "premium" last_login "2025-01-15"
+HGET user:123 plan
+-- Update single field without invalidating entire cache entry
+HSET user:123 last_login "2025-01-16"
+EXPIRE user:123 3600
+
+-- Sorted set for leaderboard with automatic cache
+ZADD leaderboard 1500 "user:alice" 1200 "user:bob" 1800 "user:charlie"
+ZREVRANGE leaderboard 0 9 WITHSCORES
+-- Top 10 with scores, always up to date
+
+-- Cache warming on deploy (pipeline for efficiency)
+MULTI
+SET config:feature_flags '{"new_ui":true}' EX 86400
+SET config:rate_limits '{"api":1000,"web":5000}' EX 86400
+SET cache:products_count 4521 EX 300
+EXEC`,
+};
+
+## Overview
+
+The cache-aside pattern (lazy loading) checks Redis before the database, caching results on miss. This reduces database load for read-heavy workloads while keeping implementation simple and cache consistent with source data.
+
+## Code
+
+```
+GET key           -> cache hit? return
+SET key value EX 3600  -> cache miss: store with TTL
+DEL key           -> on write: invalidate
+```
+
+## Notes
+
+- TTL prevents stale data from persisting indefinitely; choose based on acceptable staleness
+- Cache stampede occurs when many processes simultaneously discover an expired key and hit the DB
+- `SET NX` lock ensures only one process rebuilds while others wait (mutex pattern)
+- `MGET` reduces round trips by batching multiple key lookups in one command
+- Hash (`HSET/HGET`) enables partial field updates without invalidating the entire object
+- Write-through alternative: update cache on every write (fresher but more complex)

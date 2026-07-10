@@ -1,0 +1,156 @@
+---
+title: "FastAPI Dependency Injection"
+description: "Advanced dependency injection patterns for FastAPI with database sessions, authentication, caching, and hierarchical dependencies."
+category: "Python"
+language: "python"
+tags: ["python", "fastapi", "dependency-injection", "database", "production-ready"]
+createdAt: "2025-02-01"
+updatedAt: "2025-02-20"
+---
+
+export const codeBlocks = {
+  main: `from typing import AsyncGenerator, Annotated
+from contextlib import asynccontextmanager
+
+from fastapi import Depends, FastAPI, HTTPException, Header, status
+from sqlalchemy.ext.asyncio import AsyncSession, create_async_engine, async_sessionmaker
+from pydantic import BaseModel
+import jwt
+
+# Database session dependency
+DATABASE_URL = "postgresql+asyncpg://user:pass@localhost/db"
+engine = create_async_engine(DATABASE_URL, pool_size=20, max_overflow=10)
+async_session = async_sessionmaker(engine, class_=AsyncSession, expire_on_commit=False)
+
+
+async def get_db() -> AsyncGenerator[AsyncSession, None]:
+    """Yield a database session with automatic cleanup."""
+    session = async_session()
+    try:
+        yield session
+        await session.commit()
+    except Exception:
+        await session.rollback()
+        raise
+    finally:
+        await session.close()
+
+
+# Authentication dependency
+class CurrentUser(BaseModel):
+    id: str
+    email: str
+    roles: list[str]
+
+
+async def get_current_user(
+    authorization: Annotated[str | None, Header()] = None,
+) -> CurrentUser:
+    """Extract and validate JWT from Authorization header."""
+    if not authorization or not authorization.startswith("Bearer "):
+        raise HTTPException(
+            status_code=status.HTTP_401_UNAUTHORIZED,
+            detail="Missing or invalid authorization header",
+            headers={"WWW-Authenticate": "Bearer"},
+        )
+
+    token = authorization.removeprefix("Bearer ")
+    try:
+        payload = jwt.decode(token, "secret-key", algorithms=["HS256"])
+        return CurrentUser(
+            id=payload["sub"],
+            email=payload["email"],
+            roles=payload.get("roles", []),
+        )
+    except jwt.ExpiredSignatureError:
+        raise HTTPException(status_code=401, detail="Token expired")
+    except jwt.InvalidTokenError:
+        raise HTTPException(status_code=401, detail="Invalid token")
+
+
+# Role-based access control dependency factory
+def require_roles(*required_roles: str):
+    """Create a dependency that enforces role requirements."""
+    async def role_checker(
+        user: Annotated[CurrentUser, Depends(get_current_user)],
+    ) -> CurrentUser:
+        if not any(role in user.roles for role in required_roles):
+            raise HTTPException(
+                status_code=status.HTTP_403_FORBIDDEN,
+                detail=f"Requires one of: {', '.join(required_roles)}",
+            )
+        return user
+
+    return role_checker
+
+
+# Service layer dependency
+class UserService:
+    def __init__(self, db: AsyncSession):
+        self.db = db
+
+    async def get_by_id(self, user_id: str):
+        result = await self.db.execute(
+            select(UserModel).where(UserModel.id == user_id)
+        )
+        return result.scalar_one_or_none()
+
+    async def create(self, data: dict) -> "UserModel":
+        user = UserModel(**data)
+        self.db.add(user)
+        await self.db.flush()
+        return user
+
+
+async def get_user_service(
+    db: Annotated[AsyncSession, Depends(get_db)],
+) -> UserService:
+    return UserService(db)
+
+
+# Type aliases for cleaner route signatures
+DB = Annotated[AsyncSession, Depends(get_db)]
+Auth = Annotated[CurrentUser, Depends(get_current_user)]
+AdminOnly = Annotated[CurrentUser, Depends(require_roles("admin"))]
+UserSvc = Annotated[UserService, Depends(get_user_service)]
+
+
+# Routes using dependencies
+app = FastAPI()
+
+@app.get("/api/users/me")
+async def get_me(user: Auth):
+    return {"id": user.id, "email": user.email}
+
+@app.get("/api/admin/users")
+async def list_users(admin: AdminOnly, service: UserSvc):
+    return await service.list_all()
+
+@app.post("/api/users")
+async def create_user(data: dict, db: DB, user: Auth):
+    service = UserService(db)
+    return await service.create(data)`,
+};
+
+## Overview
+
+FastAPI's dependency injection system enables clean separation of concerns for database access, authentication, authorization, and service layers. Dependencies are composable and hierarchical, with automatic lifecycle management for resources like database sessions.
+
+## Code
+
+```python
+DB = Annotated[AsyncSession, Depends(get_db)]
+Auth = Annotated[CurrentUser, Depends(get_current_user)]
+
+@app.get("/users/me")
+async def get_me(user: Auth, db: DB):
+    ...
+```
+
+## Notes
+
+- `Annotated` type aliases keep route signatures clean while preserving type information
+- Database sessions auto-commit on success and rollback on exception via the generator pattern
+- `require_roles` is a dependency factory that creates parameterized access control checks
+- Dependencies are resolved once per request and shared when reused (singleton per request)
+- FastAPI runs async dependencies concurrently when they do not depend on each other

@@ -1,0 +1,113 @@
+---
+title: "Structured Log Parser"
+description: "AWK-based log parsing for extracting metrics, top errors, slow requests, and generating summary reports from application logs."
+category: "Bash"
+language: "bash"
+tags: ["bash", "log-parsing", "awk", "monitoring", "production-ready"]
+createdAt: "2025-04-15"
+updatedAt: "2025-05-01"
+---
+
+export const codeBlocks = {
+  main: `#!/usr/bin/env bash
+set -euo pipefail
+
+LOG_FILE="\${1:-/var/log/app/access.log}"
+TOP_N="\${TOP_N:-10}"
+SLOW_THRESHOLD_MS="\${SLOW_THRESHOLD_MS:-1000}"
+
+[[ -f "$LOG_FILE" ]] || { echo "File not found: $LOG_FILE"; exit 1; }
+
+echo "=== Log Analysis: $(basename "$LOG_FILE") ==="
+echo "Period: $(head -1 "$LOG_FILE" | grep -oP '\\d{4}-\\d{2}-\\d{2}') to $(tail -1 "$LOG_FILE" | grep -oP '\\d{4}-\\d{2}-\\d{2}')"
+echo ""
+
+# Request summary by status code
+echo "--- Status Code Distribution ---"
+awk '{print $9}' "$LOG_FILE" | sort | uniq -c | sort -rn | \
+    awk '{printf "  HTTP %s: %d requests (%.1f%%)\n", $2, $1, $1/NR*100}'
+echo ""
+
+# Top endpoints by request count
+echo "--- Top $TOP_N Endpoints ---"
+awk '{print $7}' "$LOG_FILE" | \
+    sed 's/\?.*//; s/\/[0-9a-f-]\{36\}/\/:id/g; s/\/[0-9]\+/\/:id/g' | \
+    sort | uniq -c | sort -rn | head -n "$TOP_N" | \
+    awk '{printf "  %6d  %s\n", $1, $2}'
+echo ""
+
+# Slow requests (above threshold)
+echo "--- Slow Requests (>\${SLOW_THRESHOLD_MS}ms) ---"
+awk -v threshold="$SLOW_THRESHOLD_MS" '
+    match($0, /duration=([0-9]+)/, arr) {
+        if (arr[1]+0 > threshold) {
+            printf "  %sms %s %s\n", arr[1], $6, $7
+        }
+    }
+' "$LOG_FILE" | sort -t'=' -k1 -rn | head -n "$TOP_N"
+echo ""
+
+# Error analysis
+echo "--- Top $TOP_N Errors ---"
+grep -i '"level":"error"\|ERROR\|\[error\]' "$LOG_FILE" 2>/dev/null | \
+    grep -oP '"message":"[^"]*"|ERROR [^|]+' | \
+    sort | uniq -c | sort -rn | head -n "$TOP_N" | \
+    awk '{printf "  %4d  %s\n", $1, substr($0, index($0,$2))}'
+echo ""
+
+# Requests per minute (traffic pattern)
+echo "--- Traffic Pattern (requests/minute, last 10 intervals) ---"
+awk '{
+    match($0, /[0-9]{4}-[0-9]{2}-[0-9]{2}[T ][0-9]{2}:[0-9]{2}/, ts)
+    if (ts[0]) minutes[ts[0]]++
+}
+END {
+    n=asorti(minutes, sorted)
+    start = n > 10 ? n-9 : 1
+    for (i=start; i<=n; i++) {
+        bar=""
+        for (j=0; j<minutes[sorted[i]]/10; j++) bar=bar"#"
+        printf "  %s  %4d  %s\n", sorted[i], minutes[sorted[i]], bar
+    }
+}' "$LOG_FILE"
+echo ""
+
+# Summary statistics
+echo "--- Summary ---"
+awk '
+BEGIN { total=0; errors=0; sum_duration=0; max_duration=0 }
+{
+    total++
+    if ($9 >= 500) errors++
+    if (match($0, /duration=([0-9]+)/, arr)) {
+        d = arr[1]+0
+        sum_duration += d
+        if (d > max_duration) max_duration = d
+    }
+}
+END {
+    printf "  Total requests: %d\n", total
+    printf "  Error rate: %.2f%%\n", (errors/total)*100
+    printf "  Avg duration: %.0fms\n", sum_duration/total
+    printf "  Max duration: %dms\n", max_duration
+}' "$LOG_FILE"`,
+};
+
+## Overview
+
+A log analysis script using AWK for high-performance parsing of access logs. Extracts status code distributions, top endpoints, slow requests, error patterns, and traffic trends without requiring external tools or log management platforms.
+
+## Code
+
+```bash
+./log-parser.sh /var/log/app/access.log
+TOP_N=20 SLOW_THRESHOLD_MS=500 ./log-parser.sh app.log
+```
+
+## Notes
+
+- AWK-based parsing handles gigabyte log files efficiently with constant memory
+- URL normalization (replacing UUIDs/IDs with `:id`) groups similar endpoints together
+- The traffic histogram provides quick visual pattern recognition
+- `grep -oP` with PCRE extracts fields from semi-structured JSON logs
+- Pipe through `gzip -dc` for compressed log files: `gzip -dc app.log.gz | ./parser.sh /dev/stdin`

@@ -1,0 +1,174 @@
+---
+title: "Custom Errors with thiserror"
+description: "Production error handling using thiserror for deriving Error implementations with automatic From conversions and context propagation."
+category: "Rust"
+language: "rust"
+tags: ["rust", "error-handling", "thiserror", "production-ready"]
+createdAt: "2025-01-18"
+updatedAt: "2025-02-08"
+---
+
+export const codeBlocks = {
+  main: `use thiserror::Error;
+use std::io;
+
+/// Application-level error type that unifies all error sources
+#[derive(Error, Debug)]
+pub enum AppError {
+    #[error("Database error: {0}")]
+    Database(#[from] DatabaseError),
+
+    #[error("Validation error: {field} - {message}")]
+    Validation { field: String, message: String },
+
+    #[error("User '{id}' not found")]
+    NotFound { id: String, resource: String },
+
+    #[error("Unauthorized: {0}")]
+    Unauthorized(String),
+
+    #[error("Rate limited: retry after {retry_after_secs}s")]
+    RateLimited { retry_after_secs: u64 },
+
+    #[error("External service error: {service}")]
+    ExternalService {
+        service: String,
+        #[source]
+        source: reqwest::Error,
+    },
+
+    #[error(transparent)]
+    Internal(#[from] anyhow::Error),
+}
+
+/// Database-specific errors
+#[derive(Error, Debug)]
+pub enum DatabaseError {
+    #[error("Connection failed: {0}")]
+    Connection(#[source] io::Error),
+
+    #[error("Query timeout after {timeout_ms}ms")]
+    Timeout { timeout_ms: u64 },
+
+    #[error("Unique constraint violation on {column}")]
+    UniqueViolation { column: String },
+
+    #[error("Migration failed: {0}")]
+    Migration(String),
+}
+
+impl AppError {
+    /// Map errors to HTTP status codes
+    pub fn status_code(&self) -> u16 {
+        match self {
+            Self::NotFound { .. } => 404,
+            Self::Validation { .. } => 400,
+            Self::Unauthorized(_) => 401,
+            Self::RateLimited { .. } => 429,
+            Self::Database(DatabaseError::UniqueViolation { .. }) => 409,
+            _ => 500,
+        }
+    }
+
+    /// Create a user-safe error message (hide internals)
+    pub fn user_message(&self) -> &str {
+        match self {
+            Self::NotFound { .. } => "Resource not found",
+            Self::Validation { .. } => "Invalid request",
+            Self::Unauthorized(_) => "Authentication required",
+            Self::RateLimited { .. } => "Too many requests",
+            Self::Database(DatabaseError::UniqueViolation { .. }) => "Resource already exists",
+            _ => "Internal server error",
+        }
+    }
+
+    /// Whether the operation should be retried
+    pub fn is_retryable(&self) -> bool {
+        matches!(
+            self,
+            Self::Database(DatabaseError::Connection(_) | DatabaseError::Timeout { .. })
+                | Self::RateLimited { .. }
+                | Self::ExternalService { .. }
+        )
+    }
+}
+
+/// Result type alias for convenience
+pub type AppResult<T> = Result<T, AppError>;
+
+/// Example usage in a service layer
+pub struct UserService {
+    db: Database,
+    external: ExternalClient,
+}
+
+impl UserService {
+    pub async fn get_user(&self, id: &str) -> AppResult<User> {
+        let user = self.db.find_user(id).await.map_err(|e| match e {
+            DatabaseError::Timeout { .. } => AppError::Database(e),
+            _ => AppError::Database(e),
+        })?;
+
+        match user {
+            Some(u) => Ok(u),
+            None => Err(AppError::NotFound {
+                id: id.to_string(),
+                resource: "user".to_string(),
+            }),
+        }
+    }
+
+    pub async fn create_user(&self, email: &str, name: &str) -> AppResult<User> {
+        if email.is_empty() {
+            return Err(AppError::Validation {
+                field: "email".to_string(),
+                message: "Email is required".to_string(),
+            });
+        }
+
+        self.db
+            .insert_user(email, name)
+            .await
+            .map_err(AppError::from)
+    }
+}
+
+// Placeholder types
+struct Database;
+struct ExternalClient;
+struct User;
+
+impl Database {
+    async fn find_user(&self, _id: &str) -> Result<Option<User>, DatabaseError> {
+        Ok(None)
+    }
+    async fn insert_user(&self, _email: &str, _name: &str) -> Result<User, DatabaseError> {
+        Ok(User)
+    }
+}`,
+};
+
+## Overview
+
+Structured error handling using `thiserror` for automatic `Error` trait derivation. Each error variant carries contextual data, and the `#[from]` attribute enables automatic conversions. Error types expose methods for HTTP mapping, user-safe messages, and retry decisions.
+
+## Code
+
+```rust
+#[derive(Error, Debug)]
+pub enum AppError {
+    #[error("User '{id}' not found")]
+    NotFound { id: String },
+
+    #[error("Database error: {0}")]
+    Database(#[from] DatabaseError),
+}
+```
+
+## Notes
+
+- `#[from]` generates `From` implementations enabling the `?` operator for automatic conversion
+- `#[source]` preserves the error chain for `.source()` traversal without creating `From` impls
+- `#[error(transparent)]` delegates both Display and source to the inner error
+- `status_code()` and `user_message()` centralize HTTP response mapping
+- `is_retryable()` helps callers decide whether to retry failed operations

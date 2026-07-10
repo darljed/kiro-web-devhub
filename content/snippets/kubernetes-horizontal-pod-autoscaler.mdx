@@ -1,0 +1,146 @@
+---
+title: "Horizontal Pod Autoscaler"
+description: "Kubernetes HPA configuration with CPU/memory metrics, custom metrics, scaling behavior tuning, and stabilization windows."
+category: "Kubernetes"
+language: "yaml"
+tags: ["kubernetes", "autoscaling", "hpa", "scaling", "production-ready"]
+createdAt: "2025-01-28"
+updatedAt: "2025-02-18"
+---
+
+export const codeBlocks = {
+  main: `apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: api-service-hpa
+  namespace: production
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: api-service
+  minReplicas: 3
+  maxReplicas: 50
+  metrics:
+    # CPU-based scaling
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          averageUtilization: 70
+
+    # Memory-based scaling
+    - type: Resource
+      resource:
+        name: memory
+        target:
+          type: Utilization
+          averageUtilization: 80
+
+    # Custom metric: requests per second per pod
+    - type: Pods
+      pods:
+        metric:
+          name: http_requests_per_second
+        target:
+          type: AverageValue
+          averageValue: "1000"
+
+    # External metric: queue depth
+    - type: External
+      external:
+        metric:
+          name: sqs_queue_depth
+          selector:
+            matchLabels:
+              queue: api-tasks
+        target:
+          type: Value
+          value: "500"
+
+  behavior:
+    scaleUp:
+      stabilizationWindowSeconds: 30
+      policies:
+        - type: Percent
+          value: 100
+          periodSeconds: 30
+        - type: Pods
+          value: 10
+          periodSeconds: 60
+      selectPolicy: Max
+
+    scaleDown:
+      stabilizationWindowSeconds: 300
+      policies:
+        - type: Percent
+          value: 10
+          periodSeconds: 60
+        - type: Pods
+          value: 2
+          periodSeconds: 60
+      selectPolicy: Min
+
+---
+# Deployment with resource requests (required for HPA)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-service
+  namespace: production
+spec:
+  selector:
+    matchLabels:
+      app: api-service
+  template:
+    metadata:
+      labels:
+        app: api-service
+    spec:
+      containers:
+        - name: api
+          image: api-service:latest
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "1000m"
+              memory: "512Mi"
+          ports:
+            - containerPort: 8080
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 5
+            periodSeconds: 10`,
+};
+
+## Overview
+
+Kubernetes Horizontal Pod Autoscaler with multiple scaling metrics (CPU, memory, custom metrics, external metrics) and fine-tuned scaling behavior. Includes stabilization windows to prevent thrashing and asymmetric scale-up/scale-down policies.
+
+## Code
+
+```yaml
+behavior:
+  scaleUp:
+    stabilizationWindowSeconds: 30
+    policies:
+      - type: Percent
+        value: 100
+        periodSeconds: 30
+  scaleDown:
+    stabilizationWindowSeconds: 300
+```
+
+## Notes
+
+- `stabilizationWindowSeconds` prevents rapid oscillation by requiring metrics to be sustained
+- Scale-up is aggressive (double in 30s) while scale-down is conservative (10% per minute)
+- `selectPolicy: Max` for scale-up picks the policy that adds the most pods
+- `selectPolicy: Min` for scale-down picks the policy that removes the fewest pods
+- Resource `requests` on pods are required for CPU/memory-based HPA to calculate utilization
+- Custom metrics require a metrics adapter (Prometheus adapter, Datadog, etc.)

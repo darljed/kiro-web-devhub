@@ -1,0 +1,228 @@
+---
+title: "GraphQL Subscriptions with WebSocket"
+description: "Real-time GraphQL subscriptions using WebSocket transport for live data updates, with proper connection lifecycle management and authentication."
+category: "GraphQL"
+language: "typescript"
+tags: ["graphql", "subscriptions", "websocket", "real-time", "production-ready"]
+createdAt: "2025-04-05"
+updatedAt: "2025-04-20"
+---
+
+export const codeBlocks = {
+  main: `import { createServer } from "http";
+import { WebSocketServer } from "ws";
+import { useServer } from "graphql-ws/lib/use/ws";
+import { makeExecutableSchema } from "@graphql-tools/schema";
+import { PubSub, withFilter } from "graphql-subscriptions";
+
+const pubsub = new PubSub();
+
+// Event constants
+const EVENTS = {
+  MESSAGE_CREATED: "MESSAGE_CREATED",
+  USER_STATUS_CHANGED: "USER_STATUS_CHANGED",
+  NOTIFICATION_ADDED: "NOTIFICATION_ADDED",
+} as const;
+
+const typeDefs = \`
+  type Message {
+    id: ID!
+    content: String!
+    author: User!
+    channelId: String!
+    createdAt: String!
+  }
+
+  type User {
+    id: ID!
+    name: String!
+    status: UserStatus!
+  }
+
+  enum UserStatus {
+    ONLINE
+    OFFLINE
+    AWAY
+  }
+
+  type Notification {
+    id: ID!
+    type: String!
+    message: String!
+    createdAt: String!
+  }
+
+  type Query {
+    messages(channelId: String!): [Message!]!
+  }
+
+  type Mutation {
+    sendMessage(channelId: String!, content: String!): Message!
+    updateStatus(status: UserStatus!): User!
+  }
+
+  type Subscription {
+    messageCreated(channelId: String!): Message!
+    userStatusChanged: User!
+    notificationAdded: Notification!
+  }
+\`;
+
+const resolvers = {
+  Query: {
+    messages: (_: unknown, { channelId }: { channelId: string }, ctx: Context) =>
+      ctx.db.getMessages(channelId),
+  },
+
+  Mutation: {
+    sendMessage: async (
+      _: unknown,
+      { channelId, content }: { channelId: string; content: string },
+      ctx: Context
+    ) => {
+      const message = await ctx.db.createMessage({
+        channelId,
+        content,
+        authorId: ctx.userId,
+      });
+
+      // Publish to subscribers
+      pubsub.publish(EVENTS.MESSAGE_CREATED, {
+        messageCreated: message,
+      });
+
+      return message;
+    },
+
+    updateStatus: async (
+      _: unknown,
+      { status }: { status: string },
+      ctx: Context
+    ) => {
+      const user = await ctx.db.updateUserStatus(ctx.userId, status);
+
+      pubsub.publish(EVENTS.USER_STATUS_CHANGED, {
+        userStatusChanged: user,
+      });
+
+      return user;
+    },
+  },
+
+  Subscription: {
+    messageCreated: {
+      // Filter: only receive messages for the subscribed channel
+      subscribe: withFilter(
+        () => pubsub.asyncIterableIterator(EVENTS.MESSAGE_CREATED),
+        (payload, variables) =>
+          payload.messageCreated.channelId === variables.channelId
+      ),
+    },
+
+    userStatusChanged: {
+      subscribe: () =>
+        pubsub.asyncIterableIterator(EVENTS.USER_STATUS_CHANGED),
+    },
+
+    notificationAdded: {
+      // Filter: only send notifications to the target user
+      subscribe: withFilter(
+        () => pubsub.asyncIterableIterator(EVENTS.NOTIFICATION_ADDED),
+        (payload, _variables, ctx) =>
+          payload.notificationAdded.userId === ctx.userId
+      ),
+    },
+  },
+};
+
+// Server setup with WebSocket subscriptions
+const schema = makeExecutableSchema({ typeDefs, resolvers });
+const server = createServer();
+const wsServer = new WebSocketServer({ server, path: "/graphql" });
+
+// WebSocket server with connection lifecycle hooks
+useServer(
+  {
+    schema,
+    // Authenticate on connection
+    onConnect: async (ctx) => {
+      const token = ctx.connectionParams?.authToken as string | undefined;
+      if (!token) {
+        return false; // Reject connection
+      }
+      const user = await verifyToken(token);
+      if (!user) {
+        return false;
+      }
+      // Store user in context for subscription resolvers
+      (ctx.extra as Record<string, unknown>).userId = user.id;
+      return true;
+    },
+    // Build context for each subscription operation
+    context: (ctx) => ({
+      userId: (ctx.extra as Record<string, unknown>).userId,
+      db: createDbClient(),
+    }),
+    // Cleanup on disconnect
+    onDisconnect: async (ctx) => {
+      const userId = (ctx.extra as Record<string, unknown>).userId as string;
+      if (userId) {
+        await setUserOffline(userId);
+        pubsub.publish(EVENTS.USER_STATUS_CHANGED, {
+          userStatusChanged: { id: userId, status: "OFFLINE" },
+        });
+      }
+    },
+  },
+  wsServer
+);
+
+server.listen(4000, () => {
+  console.log("GraphQL server with subscriptions listening on :4000");
+});
+
+// Type definitions
+interface Context {
+  userId: string;
+  db: ReturnType<typeof createDbClient>;
+}
+
+function verifyToken(_token: string): Promise<{ id: string } | null> {
+  // JWT verification logic
+  return Promise.resolve({ id: "user-1" });
+}
+
+function setUserOffline(_userId: string): Promise<void> {
+  return Promise.resolve();
+}
+
+function createDbClient() {
+  return {
+    getMessages: (_channelId: string) => Promise.resolve([]),
+    createMessage: (input: Record<string, string>) =>
+      Promise.resolve({ id: "msg-1", ...input, createdAt: new Date().toISOString() }),
+    updateUserStatus: (userId: string, status: string) =>
+      Promise.resolve({ id: userId, name: "User", status }),
+  };
+}`,
+};
+
+## Overview
+
+GraphQL subscriptions provide real-time data delivery over WebSocket connections. This pattern uses the `graphql-ws` protocol (replacing the deprecated `subscriptions-transport-ws`) with proper authentication, filtered event delivery, and connection lifecycle management.
+
+## When to Use
+
+- Live chat or messaging features where users need instant message delivery
+- Dashboard updates that reflect database changes without polling
+- Collaborative editing where multiple users see changes in real time
+- Status indicators (online/offline) that update across connected clients
+
+## Notes
+
+- Use `withFilter` to prevent broadcasting events to unrelated subscribers
+- Always authenticate during the `onConnect` phase before accepting subscriptions
+- Create fresh PubSub instances per server (in-memory PubSub does not scale horizontally)
+- For production at scale, replace the in-memory PubSub with Redis-backed pub/sub (`graphql-redis-subscriptions`)
+- Handle disconnection cleanup to update user state and notify other subscribers
+- The `graphql-ws` library implements the newer GraphQL over WebSocket protocol; do not mix it with the legacy `subscriptions-transport-ws`

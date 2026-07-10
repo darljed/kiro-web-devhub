@@ -1,0 +1,198 @@
+---
+title: "Async Streams with Tokio"
+description: "Producing and consuming async data streams using async iterators, stream combinators, and bounded channel-based producers."
+category: "Rust"
+language: "rust"
+tags: ["rust", "async", "streams", "tokio", "production-ready"]
+createdAt: "2025-03-15"
+updatedAt: "2025-04-01"
+---
+
+export const codeBlocks = {
+  main: `use tokio::sync::mpsc;
+use tokio_stream::{Stream, StreamExt, wrappers::ReceiverStream};
+use std::pin::Pin;
+use std::time::Duration;
+
+/// A paginated API response
+#[derive(Debug, Clone)]
+pub struct Page<T> {
+    pub items: Vec<T>,
+    pub next_cursor: Option<String>,
+    pub total: usize,
+}
+
+/// Stream paginated API results automatically
+pub fn paginated_stream<T, F, Fut>(
+    fetch_page: F,
+    page_size: usize,
+) -> impl Stream<Item = Result<T, Box<dyn std::error::Error + Send>>>
+where
+    T: Send + 'static,
+    F: Fn(Option<String>, usize) -> Fut + Send + 'static,
+    Fut: std::future::Future<Output = Result<Page<T>, Box<dyn std::error::Error + Send>>> + Send,
+{
+    let (tx, rx) = mpsc::channel(page_size);
+
+    tokio::spawn(async move {
+        let mut cursor: Option<String> = None;
+        loop {
+            match fetch_page(cursor.clone(), page_size).await {
+                Ok(page) => {
+                    let next = page.next_cursor.clone();
+                    for item in page.items {
+                        if tx.send(Ok(item)).await.is_err() {
+                            return; // Receiver dropped
+                        }
+                    }
+                    cursor = next;
+                    if cursor.is_none() {
+                        break; // No more pages
+                    }
+                }
+                Err(e) => {
+                    let _ = tx.send(Err(e)).await;
+                    break;
+                }
+            }
+        }
+    });
+
+    ReceiverStream::new(rx)
+}
+
+/// Chunk a stream into fixed-size batches
+pub fn chunk_stream<T>(
+    mut input: Pin<Box<dyn Stream<Item = T> + Send>>,
+    chunk_size: usize,
+) -> impl Stream<Item = Vec<T>>
+where
+    T: Send + 'static,
+{
+    let (tx, rx) = mpsc::channel(4);
+
+    tokio::spawn(async move {
+        let mut buffer = Vec::with_capacity(chunk_size);
+        while let Some(item) = input.next().await {
+            buffer.push(item);
+            if buffer.len() >= chunk_size {
+                if tx.send(std::mem::take(&mut buffer)).await.is_err() {
+                    return;
+                }
+                buffer = Vec::with_capacity(chunk_size);
+            }
+        }
+        if !buffer.is_empty() {
+            let _ = tx.send(buffer).await;
+        }
+    });
+
+    ReceiverStream::new(rx)
+}
+
+/// Rate-limited stream consumer
+pub async fn rate_limited_consume<T, F, Fut>(
+    mut stream: Pin<Box<dyn Stream<Item = T> + Send>>,
+    rate: usize, // items per second
+    handler: F,
+) -> usize
+where
+    F: Fn(T) -> Fut,
+    Fut: std::future::Future<Output = ()>,
+{
+    let interval = Duration::from_secs(1) / rate as u32;
+    let mut processed = 0;
+
+    while let Some(item) = stream.next().await {
+        handler(item).await;
+        processed += 1;
+        tokio::time::sleep(interval).await;
+    }
+
+    processed
+}
+
+/// Stream that produces items with exponential backoff on errors
+pub fn resilient_stream<T, F, Fut>(
+    producer: F,
+    max_retries: usize,
+) -> impl Stream<Item = T>
+where
+    T: Send + 'static,
+    F: Fn() -> Fut + Send + 'static + Clone,
+    Fut: std::future::Future<Output = Option<T>> + Send,
+{
+    let (tx, rx) = mpsc::channel(32);
+
+    tokio::spawn(async move {
+        let mut consecutive_failures = 0;
+
+        loop {
+            match (producer.clone())().await {
+                Some(item) => {
+                    consecutive_failures = 0;
+                    if tx.send(item).await.is_err() {
+                        break;
+                    }
+                }
+                None => {
+                    consecutive_failures += 1;
+                    if consecutive_failures > max_retries {
+                        break;
+                    }
+                    let backoff = Duration::from_millis(100 * 2u64.pow(consecutive_failures as u32));
+                    tokio::time::sleep(backoff.min(Duration::from_secs(30))).await;
+                }
+            }
+        }
+    });
+
+    ReceiverStream::new(rx)
+}`,
+  usage: `// Stream paginated API results
+let users = paginated_stream(
+    |cursor, limit| async move {
+        api_client.list_users(cursor, limit).await
+    },
+    100, // page size
+);
+
+// Process with combinators
+tokio::pin!(users);
+let active_users: Vec<User> = users
+    .filter_map(|r| r.ok())
+    .filter(|u| u.is_active)
+    .take(500)
+    .collect()
+    .await;
+
+// Batch process with rate limiting
+let stream = paginated_stream(fetch_orders, 50);
+let batches = chunk_stream(Box::pin(stream.filter_map(|r| r.ok())), 100);
+tokio::pin!(batches);
+while let Some(batch) = batches.next().await {
+    bulk_insert(&batch).await?;
+}`,
+};
+
+## Overview
+
+Async stream patterns for processing data that arrives over time or in pages. Streams provide lazy evaluation with backpressure, enabling memory-efficient processing of large datasets through composable operations like map, filter, and chunk.
+
+## Code
+
+```rust
+let stream = paginated_stream(fetch_page, 100);
+tokio::pin!(stream);
+while let Some(Ok(item)) = stream.next().await {
+    process(item).await;
+}
+```
+
+## Notes
+
+- Streams are lazy; items are only produced when the consumer requests them (backpressure)
+- `mpsc` channels provide the backpressure mechanism between producer and consumer tasks
+- `tokio::pin!` is required for stack-pinning streams before calling `.next()`
+- `StreamExt` from tokio-stream provides combinator methods (filter, map, take, collect)
+- The `resilient_stream` pattern handles intermittent failures with exponential backoff

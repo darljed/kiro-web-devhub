@@ -1,0 +1,183 @@
+---
+title: "Async Semaphore Rate Limiter"
+description: "Token bucket rate limiting using asyncio semaphores for controlling throughput to external APIs with burst capacity."
+category: "Python"
+language: "python"
+tags: ["python", "async", "rate-limiting", "semaphore", "production-ready"]
+createdAt: "2025-03-15"
+updatedAt: "2025-04-01"
+---
+
+export const codeBlocks = {
+  main: `import asyncio
+import time
+from typing import TypeVar, Callable, Awaitable, Any
+from dataclasses import dataclass
+
+T = TypeVar("T")
+
+
+class AsyncRateLimiter:
+    """Token bucket rate limiter for async operations.
+
+    Allows bursts up to max_tokens while enforcing sustained rate.
+    """
+
+    def __init__(self, rate: float, max_tokens: float | None = None):
+        """
+        Args:
+            rate: Tokens per second (sustained throughput)
+            max_tokens: Maximum burst capacity (defaults to rate)
+        """
+        self.rate = rate
+        self.max_tokens = max_tokens or rate
+        self._tokens = self.max_tokens
+        self._last_refill = time.monotonic()
+        self._lock = asyncio.Lock()
+        self._waiters: int = 0
+
+    async def acquire(self, tokens: float = 1.0) -> float:
+        """Acquire tokens, waiting if necessary. Returns wait time in seconds."""
+        wait_time = 0.0
+
+        async with self._lock:
+            self._refill()
+
+            if self._tokens >= tokens:
+                self._tokens -= tokens
+                return 0.0
+
+            # Calculate wait time for tokens to be available
+            deficit = tokens - self._tokens
+            wait_time = deficit / self.rate
+
+        if wait_time > 0:
+            await asyncio.sleep(wait_time)
+            async with self._lock:
+                self._refill()
+                self._tokens -= tokens
+
+        return wait_time
+
+    async def __aenter__(self):
+        await self.acquire()
+        return self
+
+    async def __aexit__(self, *args):
+        pass
+
+    def _refill(self) -> None:
+        now = time.monotonic()
+        elapsed = now - self._last_refill
+        self._tokens = min(self.max_tokens, self._tokens + elapsed * self.rate)
+        self._last_refill = now
+
+    @property
+    def available_tokens(self) -> float:
+        elapsed = time.monotonic() - self._last_refill
+        return min(self.max_tokens, self._tokens + elapsed * self.rate)
+
+
+class ConcurrencyLimiter:
+    """Limits concurrent async operations (not rate, but parallelism)."""
+
+    def __init__(self, max_concurrent: int):
+        self._semaphore = asyncio.Semaphore(max_concurrent)
+        self._active = 0
+
+    async def __aenter__(self):
+        await self._semaphore.acquire()
+        self._active += 1
+        return self
+
+    async def __aexit__(self, *args):
+        self._active -= 1
+        self._semaphore.release()
+
+    @property
+    def active(self) -> int:
+        return self._active
+
+
+def rate_limited(
+    rate: float,
+    max_concurrent: int = 10,
+    max_tokens: float | None = None,
+) -> Callable:
+    """Decorator that applies both rate limiting and concurrency limiting."""
+    rate_limiter = AsyncRateLimiter(rate, max_tokens)
+    concurrency_limiter = ConcurrencyLimiter(max_concurrent)
+
+    def decorator(func: Callable[..., Awaitable[T]]) -> Callable[..., Awaitable[T]]:
+        async def wrapper(*args: Any, **kwargs: Any) -> T:
+            await rate_limiter.acquire()
+            async with concurrency_limiter:
+                return await func(*args, **kwargs)
+        wrapper.__wrapped__ = func  # type: ignore
+        wrapper.rate_limiter = rate_limiter  # type: ignore
+        return wrapper
+    return decorator
+
+
+# Batch rate-limited execution
+async def rate_limited_gather(
+    tasks: list[Callable[[], Awaitable[T]]],
+    rate: float,
+    max_concurrent: int = 10,
+) -> list[T | Exception]:
+    """Execute tasks with rate limiting and concurrency control."""
+    limiter = AsyncRateLimiter(rate)
+    semaphore = asyncio.Semaphore(max_concurrent)
+    results: list[T | Exception] = [None] * len(tasks)  # type: ignore
+
+    async def run(index: int, task: Callable[[], Awaitable[T]]) -> None:
+        await limiter.acquire()
+        async with semaphore:
+            try:
+                results[index] = await task()
+            except Exception as exc:
+                results[index] = exc
+
+    await asyncio.gather(*[run(i, t) for i, t in enumerate(tasks)])
+    return results`,
+  usage: `import httpx
+
+# Decorator approach: 10 requests/sec, max 5 concurrent
+@rate_limited(rate=10, max_concurrent=5)
+async def call_api(endpoint: str) -> dict:
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"https://api.example.com/{endpoint}")
+        resp.raise_for_status()
+        return resp.json()
+
+# Batch approach: process 1000 URLs at 20/sec
+results = await rate_limited_gather(
+    [lambda url=url: fetch(url) for url in urls],
+    rate=20,
+    max_concurrent=10,
+)
+
+# Context manager approach
+limiter = AsyncRateLimiter(rate=5, max_tokens=10)  # 5/sec, burst of 10
+async with limiter:
+    await make_request()`,
+};
+
+## Overview
+
+Async rate limiting using token bucket and semaphore patterns for controlling throughput to external APIs. Combines rate limiting (tokens per second) with concurrency limiting (max parallel requests) to prevent overwhelming downstream services.
+
+## Code
+
+```python
+limiter = AsyncRateLimiter(rate=10, max_tokens=20)  # 10/sec, burst 20
+await limiter.acquire()  # Waits if needed
+```
+
+## Notes
+
+- Token bucket allows initial bursts up to `max_tokens` while enforcing sustained `rate`
+- `ConcurrencyLimiter` caps parallel requests independently of rate (protects connection pools)
+- The `rate_limited` decorator combines both for comprehensive protection
+- Use `time.monotonic()` instead of `time.time()` to be immune to system clock adjustments
+- For distributed rate limiting across multiple processes, use Redis-based implementations

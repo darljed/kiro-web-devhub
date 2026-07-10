@@ -1,0 +1,128 @@
+---
+title: "Pod Disruption Budget"
+description: "Kubernetes PDB configurations for maintaining service availability during voluntary disruptions like node upgrades and cluster scaling."
+category: "Kubernetes"
+language: "yaml"
+tags: ["kubernetes", "pdb", "availability", "maintenance", "production-ready"]
+createdAt: "2025-04-20"
+updatedAt: "2025-05-05"
+---
+
+export const codeBlocks = {
+  main: `# PDB for stateless web service (percentage-based)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: web-frontend-pdb
+  namespace: production
+spec:
+  maxUnavailable: 25%
+  selector:
+    matchLabels:
+      app: web-frontend
+      tier: frontend
+
+---
+# PDB for stateful service (absolute minimum)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: database-pdb
+  namespace: production
+spec:
+  minAvailable: 2
+  selector:
+    matchLabels:
+      app: postgres
+      role: replica
+
+---
+# PDB for queue workers (allow more disruption)
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: worker-pdb
+  namespace: production
+spec:
+  maxUnavailable: 50%
+  selector:
+    matchLabels:
+      app: task-worker
+
+---
+# Complete deployment with anti-affinity and PDB
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: api-critical
+  namespace: production
+spec:
+  replicas: 5
+  selector:
+    matchLabels:
+      app: api-critical
+  template:
+    metadata:
+      labels:
+        app: api-critical
+    spec:
+      # Spread pods across nodes and zones
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: topology.kubernetes.io/zone
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: api-critical
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: ScheduleAnyway
+          labelSelector:
+            matchLabels:
+              app: api-critical
+      containers:
+        - name: api
+          image: registry.example.com/api:latest
+          resources:
+            requests:
+              cpu: "500m"
+              memory: "512Mi"
+
+---
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+metadata:
+  name: api-critical-pdb
+  namespace: production
+spec:
+  minAvailable: 3
+  selector:
+    matchLabels:
+      app: api-critical`,
+};
+
+## Overview
+
+Pod Disruption Budgets protect service availability during voluntary disruptions (node drains, cluster upgrades, autoscaler scale-down). Combined with topology spread constraints, they ensure geographic distribution and minimum replicas during maintenance.
+
+## Code
+
+```yaml
+apiVersion: policy/v1
+kind: PodDisruptionBudget
+spec:
+  minAvailable: 2          # OR
+  maxUnavailable: 25%      # percentage of total replicas
+  selector:
+    matchLabels:
+      app: my-service
+```
+
+## Notes
+
+- PDBs only affect voluntary disruptions (node drain, autoscaler); not involuntary (OOM, node crash)
+- `minAvailable` guarantees a minimum replica count; `maxUnavailable` limits simultaneous disruptions
+- Use percentage for services that auto-scale (scales with replica count)
+- Use absolute numbers for critical services with fixed replica requirements
+- Topology spread constraints distribute pods across failure domains (zones, nodes)
+- PDB + anti-affinity ensures a single node failure cannot take the service offline

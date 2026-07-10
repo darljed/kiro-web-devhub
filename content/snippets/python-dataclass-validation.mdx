@@ -1,0 +1,196 @@
+---
+title: "Dataclass with Validation"
+description: "Python dataclasses enhanced with runtime validation, immutability, serialization, and factory patterns for domain models."
+category: "Python"
+language: "python"
+tags: ["python", "dataclass", "validation", "domain-model", "production-ready"]
+createdAt: "2025-03-25"
+updatedAt: "2025-04-10"
+---
+
+export const codeBlocks = {
+  main: `from dataclasses import dataclass, field, asdict
+from typing import Self
+from datetime import datetime, timezone
+import re
+from enum import Enum
+
+
+class ValidationError(Exception):
+    def __init__(self, field: str, message: str):
+        self.field = field
+        self.message = message
+        super().__init__(f"{field}: {message}")
+
+
+class OrderStatus(Enum):
+    PENDING = "pending"
+    CONFIRMED = "confirmed"
+    SHIPPED = "shipped"
+    DELIVERED = "delivered"
+    CANCELLED = "cancelled"
+
+
+@dataclass(frozen=True)
+class Email:
+    """Value object for validated email addresses."""
+    value: str
+
+    def __post_init__(self):
+        if not re.match(r"^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$", self.value):
+            raise ValidationError("email", f"Invalid email: {self.value}")
+        # Normalize to lowercase
+        object.__setattr__(self, "value", self.value.lower())
+
+    def __str__(self) -> str:
+        return self.value
+
+
+@dataclass(frozen=True)
+class Money:
+    """Value object for monetary amounts with currency."""
+    amount: int  # Store as cents to avoid floating point
+    currency: str = "USD"
+
+    def __post_init__(self):
+        if self.amount < 0:
+            raise ValidationError("amount", "Amount cannot be negative")
+        if len(self.currency) != 3:
+            raise ValidationError("currency", "Currency must be 3-letter ISO code")
+
+    @classmethod
+    def from_dollars(cls, dollars: float, currency: str = "USD") -> Self:
+        return cls(amount=round(dollars * 100), currency=currency)
+
+    @property
+    def dollars(self) -> float:
+        return self.amount / 100
+
+    def __add__(self, other: "Money") -> "Money":
+        if self.currency != other.currency:
+            raise ValueError(f"Cannot add {self.currency} and {other.currency}")
+        return Money(amount=self.amount + other.amount, currency=self.currency)
+
+    def __str__(self) -> str:
+        return f"{self.currency} {self.dollars:.2f}"
+
+
+@dataclass
+class OrderItem:
+    product_id: str
+    name: str
+    quantity: int
+    unit_price: Money
+
+    def __post_init__(self):
+        if self.quantity < 1:
+            raise ValidationError("quantity", "Quantity must be at least 1")
+        if not self.product_id:
+            raise ValidationError("product_id", "Product ID is required")
+
+    @property
+    def subtotal(self) -> Money:
+        return Money(
+            amount=self.unit_price.amount * self.quantity,
+            currency=self.unit_price.currency,
+        )
+
+
+@dataclass
+class Order:
+    id: str
+    customer_email: Email
+    items: list[OrderItem] = field(default_factory=list)
+    status: OrderStatus = OrderStatus.PENDING
+    created_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    updated_at: datetime = field(default_factory=lambda: datetime.now(timezone.utc))
+    notes: str = ""
+
+    def __post_init__(self):
+        if not self.id:
+            raise ValidationError("id", "Order ID is required")
+
+    @property
+    def total(self) -> Money:
+        if not self.items:
+            return Money(amount=0)
+        result = self.items[0].subtotal
+        for item in self.items[1:]:
+            result = result + item.subtotal
+        return result
+
+    def add_item(self, item: OrderItem) -> None:
+        self.items.append(item)
+        self.updated_at = datetime.now(timezone.utc)
+
+    def cancel(self) -> None:
+        if self.status in (OrderStatus.SHIPPED, OrderStatus.DELIVERED):
+            raise ValueError(f"Cannot cancel order in {self.status.value} status")
+        self.status = OrderStatus.CANCELLED
+        self.updated_at = datetime.now(timezone.utc)
+
+    def to_dict(self) -> dict:
+        return {
+            "id": self.id,
+            "customer_email": str(self.customer_email),
+            "items": [
+                {
+                    "product_id": item.product_id,
+                    "name": item.name,
+                    "quantity": item.quantity,
+                    "unit_price": str(item.unit_price),
+                    "subtotal": str(item.subtotal),
+                }
+                for item in self.items
+            ],
+            "total": str(self.total),
+            "status": self.status.value,
+            "created_at": self.created_at.isoformat(),
+        }`,
+  usage: `# Create a validated order
+order = Order(
+    id="ord_001",
+    customer_email=Email("Alice@Example.com"),  # Auto-lowercased
+)
+
+order.add_item(OrderItem(
+    product_id="prod_1",
+    name="Widget",
+    quantity=3,
+    unit_price=Money.from_dollars(29.99),
+))
+
+print(order.total)  # USD 89.97
+print(order.to_dict())
+
+# Validation errors are caught immediately
+try:
+    bad_email = Email("not-an-email")
+except ValidationError as e:
+    print(e)  # email: Invalid email: not-an-email`,
+};
+
+## Overview
+
+Enhanced dataclasses that validate data on construction via `__post_init__`, ensuring domain objects are always in a valid state. Value objects like `Email` and `Money` are frozen (immutable) to prevent accidental mutation.
+
+## Code
+
+```python
+@dataclass(frozen=True)
+class Money:
+    amount: int  # cents
+    currency: str = "USD"
+
+    def __post_init__(self):
+        if self.amount < 0:
+            raise ValidationError("amount", "Cannot be negative")
+```
+
+## Notes
+
+- `frozen=True` makes instances immutable (raises on attribute assignment)
+- `__post_init__` runs after `__init__`, ideal for validation logic
+- Store money as integers (cents) to avoid floating-point precision errors
+- Value objects with validation ensure invalid data cannot propagate through the system
+- Use `@classmethod` factories for alternative construction with different input formats

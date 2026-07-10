@@ -1,0 +1,35 @@
+{
+  "id": "FEAT-002",
+  "type": "feat",
+  "description": "Redesign the landing page: update Hero, Features, Stats, CTA sections, add new Live Preview and Categories sections. Remove or keep UseCasesSection as appropriate.",
+  "status": "completed",
+  "steps": [
+    "Rewrite components/landing/HeroSection.tsx: Change headline to emphasize AI-ready pattern library value prop ('Your team's AI-ready pattern library. The battle-tested snippets AI can't generate from scratch.'). Keep AnimateOnScroll/useMounted patterns. Use semantic HTML, responsive Tailwind.",
+    "Rewrite components/landing/FeaturesSection.tsx: Replace 4 features with: 'Copy as AI Prompt' (format snippets for Claude/ChatGPT in one click), 'Battle-Tested Patterns' (real production code not toy examples), '120+ Snippets' (massive library across 15+ languages), 'Zero Backend' (fully static, deploys anywhere, loads instantly). Use lucide-react icons instead of custom illustration components.",
+    "Create new components/landing/LivePreviewSection.tsx: Show an actual snippet card preview with syntax-highlighted code. Display a realistic code block (can be hardcoded sample from one of the real snippets) with the same styling as the snippet pages. Use AnimateOnScroll for animations.",
+    "Create new components/landing/CategoriesSection.tsx: Display all available categories with snippet counts. Show categories like TypeScript, React, Python, Go, Rust, Splunk, Bash, Docker, Kubernetes, Terraform, SQL, Redis, GraphQL. Use a grid layout with category cards showing icon + name + count.",
+    "Update components/landing/StatsSection.tsx: Update numbers to reflect 122 snippets, 15+ languages, 12+ categories. Adjust stat labels as needed.",
+    "Update components/landing/CTASection.tsx: Update copy to mention the 120+ snippet library and emphasize the AI-ready value prop.",
+    "Update app/page.tsx: Add imports for LivePreviewSection and CategoriesSection. Arrange sections in order: Hero, Features, LivePreview, Categories, Stats, CTA. Remove UseCasesSection import or keep it between Stats and CTA if it adds value.",
+    "Ensure all new/updated components use 'use client' directive, responsive Tailwind CSS utility classes, semantic HTML elements (section, nav, header, article, etc.), and dark mode support."
+  ],
+  "acceptance_criteria": [
+    "Hero section displays the new AI-ready value proposition copy",
+    "Features section shows the 4 new differentiating features with lucide-react icons",
+    "Live Preview section renders a code snippet preview on the landing page",
+    "Categories section shows all categories with snippet counts",
+    "Stats section shows updated numbers (120+, 15+, 12+ categories)",
+    "CTA section has updated copy referencing larger library",
+    "All sections are responsive (mobile/tablet/desktop) with Tailwind utility classes",
+    "All sections use semantic HTML elements",
+    "Dark mode works correctly for all new/updated sections",
+    "npm run build passes",
+    "npm run lint passes"
+  ],
+  "verification": [
+    "Run: npm run build (must pass)",
+    "Run: npm run lint (must pass)"
+  ],
+  "blocked_reason": null,
+  "findings": "Successfully redesigned landing page. Removed UseCasesSection from page layout (component file retained but unused). Used lucide-react icons throughout. CategoriesSection counts match actual snippet distribution from FEAT-001 findings. Build generates all 249 static pages successfully. Lint passes clean."
+}

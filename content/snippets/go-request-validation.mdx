@@ -1,0 +1,203 @@
+---
+title: "HTTP Request Validation"
+description: "Declarative request validation for Go HTTP handlers using struct tags with custom validators and localized error messages."
+category: "Go"
+language: "go"
+tags: ["go", "http", "validation", "api", "production-ready"]
+createdAt: "2025-03-05"
+updatedAt: "2025-03-25"
+---
+
+export const codeBlocks = {
+  main: `package validate
+
+import (
+	"encoding/json"
+	"fmt"
+	"net/http"
+	"reflect"
+	"regexp"
+	"strconv"
+	"strings"
+)
+
+type ValidationError struct {
+	Field   string \`json:"field"\`
+	Message string \`json:"message"\`
+	Value   any    \`json:"value,omitempty"\`
+}
+
+type ValidationErrors []ValidationError
+
+func (ve ValidationErrors) Error() string {
+	msgs := make([]string, len(ve))
+	for i, e := range ve {
+		msgs[i] = fmt.Sprintf("%s: %s", e.Field, e.Message)
+	}
+	return strings.Join(msgs, "; ")
+}
+
+// DecodeAndValidate parses JSON body and validates struct tags
+func DecodeAndValidate[T any](r *http.Request) (T, error) {
+	var payload T
+	if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+		return payload, fmt.Errorf("invalid JSON: %w", err)
+	}
+	if errs := ValidateStruct(payload); len(errs) > 0 {
+		return payload, errs
+	}
+	return payload, nil
+}
+
+// ValidateStruct validates a struct based on "validate" tags
+func ValidateStruct(s any) ValidationErrors {
+	var errors ValidationErrors
+	v := reflect.ValueOf(s)
+	t := reflect.TypeOf(s)
+
+	if v.Kind() == reflect.Ptr {
+		v = v.Elem()
+		t = t.Elem()
+	}
+
+	for i := 0; i < v.NumField(); i++ {
+		field := t.Field(i)
+		value := v.Field(i)
+		tag := field.Tag.Get("validate")
+		jsonTag := field.Tag.Get("json")
+		fieldName := jsonTag
+		if fieldName == "" || fieldName == "-" {
+			fieldName = field.Name
+		}
+		fieldName = strings.Split(fieldName, ",")[0]
+
+		if tag == "" {
+			continue
+		}
+
+		rules := strings.Split(tag, ",")
+		for _, rule := range rules {
+			if err := applyRule(fieldName, value, rule); err != nil {
+				errors = append(errors, *err)
+			}
+		}
+	}
+	return errors
+}
+
+func applyRule(field string, value reflect.Value, rule string) *ValidationError {
+	parts := strings.SplitN(rule, "=", 2)
+	ruleName := parts[0]
+	var param string
+	if len(parts) > 1 {
+		param = parts[1]
+	}
+
+	switch ruleName {
+	case "required":
+		if isZero(value) {
+			return &ValidationError{Field: field, Message: "is required"}
+		}
+	case "min":
+		n, _ := strconv.Atoi(param)
+		switch value.Kind() {
+		case reflect.String:
+			if value.Len() < n {
+				return &ValidationError{Field: field, Message: fmt.Sprintf("must be at least %d characters", n)}
+			}
+		case reflect.Int, reflect.Int64:
+			if value.Int() < int64(n) {
+				return &ValidationError{Field: field, Message: fmt.Sprintf("must be at least %d", n)}
+			}
+		}
+	case "max":
+		n, _ := strconv.Atoi(param)
+		switch value.Kind() {
+		case reflect.String:
+			if value.Len() > n {
+				return &ValidationError{Field: field, Message: fmt.Sprintf("must be at most %d characters", n)}
+			}
+		case reflect.Int, reflect.Int64:
+			if value.Int() > int64(n) {
+				return &ValidationError{Field: field, Message: fmt.Sprintf("must be at most %d", n)}
+			}
+		}
+	case "email":
+		emailRegex := regexp.MustCompile(\`^[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\\.[a-zA-Z]{2,}$\`)
+		if !emailRegex.MatchString(value.String()) {
+			return &ValidationError{Field: field, Message: "must be a valid email", Value: value.String()}
+		}
+	case "oneof":
+		allowed := strings.Split(param, " ")
+		found := false
+		for _, a := range allowed {
+			if value.String() == a {
+				found = true
+				break
+			}
+		}
+		if !found {
+			return &ValidationError{Field: field, Message: fmt.Sprintf("must be one of: %s", strings.Join(allowed, ", "))}
+		}
+	}
+	return nil
+}
+
+func isZero(v reflect.Value) bool {
+	switch v.Kind() {
+	case reflect.String:
+		return v.Len() == 0
+	case reflect.Int, reflect.Int64:
+		return v.Int() == 0
+	case reflect.Slice, reflect.Map:
+		return v.IsNil() || v.Len() == 0
+	case reflect.Ptr, reflect.Interface:
+		return v.IsNil()
+	default:
+		return false
+	}
+}`,
+  usage: `type CreateUserRequest struct {
+    Name     string \`json:"name" validate:"required,min=2,max=100"\`
+    Email    string \`json:"email" validate:"required,email"\`
+    Role     string \`json:"role" validate:"required,oneof=admin user moderator"\`
+    Age      int    \`json:"age" validate:"min=13,max=150"\`
+}
+
+func CreateUserHandler(w http.ResponseWriter, r *http.Request) {
+    user, err := validate.DecodeAndValidate[CreateUserRequest](r)
+    if err != nil {
+        var valErrs validate.ValidationErrors
+        if errors.As(err, &valErrs) {
+            w.WriteHeader(http.StatusBadRequest)
+            json.NewEncoder(w).Encode(map[string]any{"errors": valErrs})
+            return
+        }
+        http.Error(w, err.Error(), http.StatusBadRequest)
+        return
+    }
+    // user is valid, proceed
+}`,
+};
+
+## Overview
+
+Declarative request validation using struct tags for Go HTTP APIs. Validates JSON request bodies against rules like `required`, `min`, `max`, `email`, and `oneof`, returning structured field-level errors for frontend consumption.
+
+## Code
+
+```go
+type Request struct {
+    Email string \`json:"email" validate:"required,email"\`
+    Age   int    \`json:"age" validate:"min=18,max=120"\`
+}
+payload, err := validate.DecodeAndValidate[Request](r)
+```
+
+## Notes
+
+- Generics (`DecodeAndValidate[T]`) provide type-safe request parsing without interface{}
+- Validation rules are composable via comma-separated struct tags
+- The `oneof` rule is useful for enum-like string fields without defining Go enums
+- For production use, consider the `go-playground/validator` package for comprehensive validation
+- JSON field names are used in error responses for frontend field mapping

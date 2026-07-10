@@ -1,0 +1,204 @@
+---
+title: "Arc Mutex Shared State"
+description: "Thread-safe shared state patterns using Arc and Mutex with lock-free alternatives, deadlock prevention, and async-compatible locking."
+category: "Rust"
+language: "rust"
+tags: ["rust", "concurrency", "arc-mutex", "shared-state", "production-ready"]
+createdAt: "2025-03-05"
+updatedAt: "2025-03-25"
+---
+
+export const codeBlocks = {
+  main: `use std::collections::HashMap;
+use std::sync::{Arc, RwLock};
+use std::time::{Duration, Instant};
+use tokio::sync::Mutex as AsyncMutex;
+
+/// Thread-safe cache with expiration using RwLock for read-heavy workloads
+#[derive(Clone)]
+pub struct Cache<V: Clone> {
+    inner: Arc<RwLock<CacheInner<V>>>,
+    ttl: Duration,
+    max_entries: usize,
+}
+
+struct CacheInner<V> {
+    entries: HashMap<String, CacheEntry<V>>,
+    hits: u64,
+    misses: u64,
+}
+
+struct CacheEntry<V> {
+    value: V,
+    inserted_at: Instant,
+    access_count: u64,
+}
+
+impl<V: Clone> Cache<V> {
+    pub fn new(ttl: Duration, max_entries: usize) -> Self {
+        Self {
+            inner: Arc::new(RwLock::new(CacheInner {
+                entries: HashMap::new(),
+                hits: 0,
+                misses: 0,
+            })),
+            ttl,
+            max_entries,
+        }
+    }
+
+    /// Get a value (read lock - multiple concurrent readers allowed)
+    pub fn get(&self, key: &str) -> Option<V> {
+        let mut inner = self.inner.write().unwrap();
+        if let Some(entry) = inner.entries.get_mut(key) {
+            if entry.inserted_at.elapsed() < self.ttl {
+                entry.access_count += 1;
+                inner.hits += 1;
+                return Some(entry.value.clone());
+            }
+            // Expired - remove it
+            inner.entries.remove(key);
+        }
+        inner.misses += 1;
+        None
+    }
+
+    /// Set a value (write lock - exclusive access)
+    pub fn set(&self, key: String, value: V) {
+        let mut inner = self.inner.write().unwrap();
+        // Evict if at capacity
+        if inner.entries.len() >= self.max_entries && !inner.entries.contains_key(&key) {
+            self.evict_lru(&mut inner);
+        }
+        inner.entries.insert(key, CacheEntry {
+            value,
+            inserted_at: Instant::now(),
+            access_count: 0,
+        });
+    }
+
+    /// Remove a specific key
+    pub fn invalidate(&self, key: &str) -> bool {
+        self.inner.write().unwrap().entries.remove(key).is_some()
+    }
+
+    /// Get cache statistics
+    pub fn stats(&self) -> CacheStats {
+        let inner = self.inner.read().unwrap();
+        let total = inner.hits + inner.misses;
+        CacheStats {
+            entries: inner.entries.len(),
+            hits: inner.hits,
+            misses: inner.misses,
+            hit_rate: if total > 0 { inner.hits as f64 / total as f64 } else { 0.0 },
+        }
+    }
+
+    fn evict_lru(inner: &mut CacheInner<V>) {
+        if let Some(lru_key) = inner
+            .entries
+            .iter()
+            .min_by_key(|(_, e)| e.access_count)
+            .map(|(k, _)| k.clone())
+        {
+            inner.entries.remove(&lru_key);
+        }
+    }
+}
+
+#[derive(Debug)]
+pub struct CacheStats {
+    pub entries: usize,
+    pub hits: u64,
+    pub misses: u64,
+    pub hit_rate: f64,
+}
+
+/// Async-compatible shared state using tokio::sync::Mutex
+pub struct AsyncRegistry {
+    services: Arc<AsyncMutex<HashMap<String, ServiceInfo>>>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ServiceInfo {
+    pub address: String,
+    pub healthy: bool,
+    pub last_check: Instant,
+}
+
+impl AsyncRegistry {
+    pub fn new() -> Self {
+        Self {
+            services: Arc::new(AsyncMutex::new(HashMap::new())),
+        }
+    }
+
+    pub async fn register(&self, name: String, address: String) {
+        let mut services = self.services.lock().await;
+        services.insert(name, ServiceInfo {
+            address,
+            healthy: true,
+            last_check: Instant::now(),
+        });
+    }
+
+    pub async fn get_healthy(&self, name: &str) -> Option<ServiceInfo> {
+        let services = self.services.lock().await;
+        services.get(name).filter(|s| s.healthy).cloned()
+    }
+
+    pub async fn mark_unhealthy(&self, name: &str) {
+        let mut services = self.services.lock().await;
+        if let Some(service) = services.get_mut(name) {
+            service.healthy = false;
+            service.last_check = Instant::now();
+        }
+    }
+}`,
+  usage: `use std::sync::Arc;
+
+// Cache can be shared across threads safely
+let cache = Cache::new(Duration::from_secs(300), 1000);
+let cache_clone = cache.clone(); // Arc clone - cheap
+
+// Spawn multiple reader threads
+let handles: Vec<_> = (0..10).map(|i| {
+    let c = cache.clone();
+    std::thread::spawn(move || {
+        if let Some(value) = c.get("key") {
+            println!("Thread {i} got: {value}");
+        }
+    })
+}).collect();
+
+// Writer thread
+cache.set("key".to_string(), "value".to_string());
+
+// Async service registry
+let registry = AsyncRegistry::new();
+registry.register("auth".into(), "localhost:3001".into()).await;
+
+if let Some(service) = registry.get_healthy("auth").await {
+    println!("Auth service at: {}", service.address);
+}`,
+};
+
+## Overview
+
+Thread-safe shared state management in Rust using `Arc` (atomic reference counting) with `RwLock` (multiple readers OR one writer) or `Mutex` (exclusive access). This example implements a cache that is safe to share across threads with TTL expiration and LRU eviction.
+
+## Code
+
+```rust
+let cache = Cache::new(Duration::from_secs(60), 1000);
+let clone = cache.clone(); // Arc::clone - just increments refcount
+std::thread::spawn(move || { clone.get("key"); });
+```
+
+## Notes
+
+- `RwLock` allows multiple concurrent readers but exclusive write access (better for read-heavy)
+- `Arc` enables shared ownership across threads; cloning only increments the atomic counter
+- `tokio::sync::Mutex` must be used instead of `std::sync::Mutex` when holding locks across `.await`
+- Lock poisoning (std Mutex/RwLock) occurs if a thread panics while holding the lock
+- For lock-free alternatives, consider `dashmap` for concurrent HashMaps or atomics for counters

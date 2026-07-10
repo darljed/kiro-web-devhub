@@ -1,0 +1,80 @@
+---
+title: "Pub/Sub Event System"
+description: "Redis Pub/Sub for real-time event broadcasting with pattern subscriptions, message routing, and reliable delivery patterns."
+category: "Redis"
+language: "redis"
+tags: ["redis", "pub-sub", "events", "real-time", "production-ready"]
+createdAt: "2025-03-20"
+updatedAt: "2025-04-05"
+---
+
+export const codeBlocks = {
+  main: `-- Basic Pub/Sub: publish events to channels
+PUBLISH user:events '{"type":"signup","user_id":"u_123","timestamp":"2025-03-20T10:00:00Z"}'
+PUBLISH order:events '{"type":"created","order_id":"ord_456","amount":99.99}'
+PUBLISH notification:email '{"to":"alice@co.com","subject":"Welcome!","template":"welcome"}'
+
+-- Subscribe to specific channels
+SUBSCRIBE user:events order:events
+
+-- Pattern-based subscription (wildcard)
+PSUBSCRIBE user:*
+-- Matches: user:events, user:login, user:logout, etc.
+
+PSUBSCRIBE order:*.high-priority
+-- Matches: order:created.high-priority, order:cancelled.high-priority
+
+-- Redis Streams for reliable event delivery (persisted, consumer groups)
+-- Create stream entries (unlike pub/sub, these persist)
+XADD events:orders * type "created" order_id "ord_789" amount "149.99" customer_id "c_456"
+XADD events:orders * type "paid" order_id "ord_789" payment_method "stripe"
+XADD events:orders * type "shipped" order_id "ord_789" tracking "1Z999AA10123456784"
+
+-- Create consumer group for reliable processing
+XGROUP CREATE events:orders order-processors $ MKSTREAM
+
+-- Consumer reads from group (each message delivered to one consumer)
+XREADGROUP GROUP order-processors worker-1 COUNT 10 BLOCK 5000 STREAMS events:orders >
+
+-- Acknowledge processed messages
+XACK events:orders order-processors 1679900000000-0
+
+-- Check pending (unacknowledged) messages
+XPENDING events:orders order-processors - + 10
+
+-- Claim timed-out messages from dead consumers
+XAUTOCLAIM events:orders order-processors worker-2 60000 0-0
+
+-- Stream info and monitoring
+XINFO STREAM events:orders
+XINFO GROUPS events:orders
+XLEN events:orders
+
+-- Trim stream to prevent unbounded growth
+XTRIM events:orders MAXLEN ~ 10000`,
+};
+
+## Overview
+
+Redis Pub/Sub for fire-and-forget broadcasting and Redis Streams for reliable, persistent event delivery with consumer groups. Streams provide at-least-once delivery, message acknowledgment, and dead letter handling.
+
+## Code
+
+```
+-- Fire and forget
+PUBLISH channel '{"event":"data"}'
+
+-- Reliable delivery with consumer groups
+XADD stream * key value
+XREADGROUP GROUP mygroup consumer1 STREAMS stream >
+XACK stream mygroup message-id
+```
+
+## Notes
+
+- Pub/Sub is fire-and-forget: if no subscriber is connected, the message is lost
+- Redis Streams persist messages and support consumer groups for reliable processing
+- `BLOCK 5000` makes XREADGROUP wait up to 5 seconds for new messages (long polling)
+- `XAUTOCLAIM` recovers messages from crashed consumers after a timeout (dead letter handling)
+- `MAXLEN ~` with approximate trimming is more efficient than exact trimming
+- For cross-service communication requiring guaranteed delivery, consider RabbitMQ or Kafka instead

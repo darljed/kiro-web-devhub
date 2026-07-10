@@ -1,0 +1,170 @@
+---
+title: "Result Type for Error Handling"
+description: "A Rust-inspired Result type for TypeScript that makes errors part of the type system instead of relying on try/catch."
+category: "TypeScript"
+language: "typescript"
+tags: ["typescript", "error-handling", "result-type", "functional", "production-ready"]
+createdAt: "2025-02-15"
+updatedAt: "2025-03-05"
+---
+
+export const codeBlocks = {
+  main: `type Result<T, E = Error> =
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+
+export function Ok<T>(value: T): Result<T, never> {
+  return { ok: true, value };
+}
+
+export function Err<E>(error: E): Result<never, E> {
+  return { ok: false, error };
+}
+
+// Wrap a throwing function into a Result
+export function tryCatch<T, E = Error>(fn: () => T): Result<T, E> {
+  try {
+    return Ok(fn());
+  } catch (error) {
+    return Err(error as E);
+  }
+}
+
+// Wrap an async throwing function into a Result
+export async function tryCatchAsync<T, E = Error>(
+  fn: () => Promise<T>
+): Promise<Result<T, E>> {
+  try {
+    const value = await fn();
+    return Ok(value);
+  } catch (error) {
+    return Err(error as E);
+  }
+}
+
+// Utility: map over the success value
+export function mapResult<T, U, E>(
+  result: Result<T, E>,
+  fn: (value: T) => U
+): Result<U, E> {
+  if (result.ok) {
+    return Ok(fn(result.value));
+  }
+  return result;
+}
+
+// Utility: chain Results (flatMap)
+export function flatMapResult<T, U, E>(
+  result: Result<T, E>,
+  fn: (value: T) => Result<U, E>
+): Result<U, E> {
+  if (result.ok) {
+    return fn(result.value);
+  }
+  return result;
+}
+
+// Utility: unwrap with default
+export function unwrapOr<T, E>(result: Result<T, E>, defaultValue: T): T {
+  return result.ok ? result.value : defaultValue;
+}
+
+// Utility: collect array of Results into Result of array
+export function collectResults<T, E>(results: Result<T, E>[]): Result<T[], E> {
+  const values: T[] = [];
+  for (const result of results) {
+    if (!result.ok) return result;
+    values.push(result.value);
+  }
+  return Ok(values);
+}
+
+// Domain error types
+interface ValidationError {
+  type: "validation";
+  field: string;
+  message: string;
+}
+
+interface NotFoundError {
+  type: "not_found";
+  resource: string;
+  id: string;
+}
+
+interface NetworkError {
+  type: "network";
+  statusCode: number;
+  message: string;
+}
+
+type AppError = ValidationError | NotFoundError | NetworkError;
+
+// Usage with domain errors
+function parseUserId(input: string): Result<number, ValidationError> {
+  const id = parseInt(input, 10);
+  if (isNaN(id) || id <= 0) {
+    return Err({ type: "validation", field: "userId", message: "Must be a positive integer" });
+  }
+  return Ok(id);
+}
+
+async function fetchUser(id: number): Promise<Result<{ name: string }, AppError>> {
+  const response = await fetch(\`/api/users/\${id}\`);
+  if (response.status === 404) {
+    return Err({ type: "not_found", resource: "user", id: String(id) });
+  }
+  if (!response.ok) {
+    return Err({ type: "network", statusCode: response.status, message: response.statusText });
+  }
+  return Ok(await response.json());
+}`,
+  usage: `// Composing Results
+async function getUserName(input: string): Promise<Result<string, AppError>> {
+  const idResult = parseUserId(input);
+  if (!idResult.ok) return idResult;
+
+  const userResult = await fetchUser(idResult.value);
+  return mapResult(userResult, (user) => user.name);
+}
+
+// Pattern matching on the result
+const result = await getUserName(params.id);
+if (result.ok) {
+  return { status: 200, body: { name: result.value } };
+} else {
+  switch (result.error.type) {
+    case "validation": return { status: 400, body: { error: result.error.message } };
+    case "not_found": return { status: 404, body: { error: "User not found" } };
+    case "network": return { status: 502, body: { error: "Upstream error" } };
+  }
+}`,
+};
+
+## Overview
+
+A Result type that encodes success and failure in the type system, forcing callers to explicitly handle both cases. This eliminates unhandled exceptions and makes error paths visible in function signatures, inspired by Rust's `Result<T, E>`.
+
+## Code
+
+```typescript
+type Result<T, E = Error> =
+  | { ok: true; value: T }
+  | { ok: false; error: E };
+
+export function Ok<T>(value: T): Result<T, never> {
+  return { ok: true, value };
+}
+
+export function Err<E>(error: E): Result<never, E> {
+  return { ok: false, error };
+}
+```
+
+## Notes
+
+- Unlike exceptions, Result types make error handling explicit and visible in function signatures
+- Use discriminated union domain errors (`type` field) for exhaustive pattern matching
+- `tryCatch` and `tryCatchAsync` wrap existing throwing code into the Result pattern
+- `collectResults` is useful when running multiple operations that may each fail independently
+- This pattern works well with the `assertNever` exhaustive check for error handling

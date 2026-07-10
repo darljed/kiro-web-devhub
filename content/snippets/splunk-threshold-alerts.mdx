@@ -1,0 +1,87 @@
+---
+title: "Threshold-Based Alerting"
+description: "SPL alert queries with multi-condition thresholds, alert deduplication, severity classification, and runbook links."
+category: "Splunk"
+language: "spl"
+tags: ["splunk", "alerting", "thresholds", "monitoring", "production-ready"]
+createdAt: "2025-02-18"
+updatedAt: "2025-03-08"
+---
+
+export const codeBlocks = {
+  main: `| Multi-condition service alert
+index=application sourcetype=access_combined earliest=-5m
+| stats
+    count as total_requests,
+    avg(response_time) as avg_response_ms,
+    perc95(response_time) as p95_response_ms,
+    sum(eval(if(status>=500, 1, 0))) as error_count
+    by service_name
+| eval error_rate=round((error_count/total_requests)*100, 2)
+| eval alert_conditions=""
+| eval alert_conditions=if(error_rate > 5,
+    alert_conditions . "HIGH_ERROR_RATE(" . error_rate . "%) ", alert_conditions)
+| eval alert_conditions=if(p95_response_ms > 2000,
+    alert_conditions . "HIGH_LATENCY(p95=" . round(p95_response_ms) . "ms) ", alert_conditions)
+| eval alert_conditions=if(total_requests < 10,
+    alert_conditions . "LOW_TRAFFIC(" . total_requests . "req) ", alert_conditions)
+| where len(alert_conditions) > 0
+| eval severity=case(
+    error_rate > 25 OR p95_response_ms > 10000, "P1-Critical",
+    error_rate > 10 OR p95_response_ms > 5000, "P2-High",
+    error_rate > 5 OR p95_response_ms > 2000, "P3-Medium",
+    1=1, "P4-Low"
+)
+| eval runbook=case(
+    like(alert_conditions, "%HIGH_ERROR_RATE%"), "https://wiki/runbooks/high-error-rate",
+    like(alert_conditions, "%HIGH_LATENCY%"), "https://wiki/runbooks/high-latency",
+    1=1, "https://wiki/runbooks/general"
+)
+| table service_name, severity, alert_conditions, error_rate, p95_response_ms, total_requests, runbook
+
+| Alert deduplication - only fire if condition persists
+index=application sourcetype=access_combined earliest=-15m
+| timechart span=5m
+    sum(eval(if(status>=500, 1, 0))) as errors,
+    count as total
+    by service_name
+| eval error_rate=round((errors/total)*100, 2)
+| eventstats count(eval(error_rate > 5)) as consecutive_breaches by service_name
+| where consecutive_breaches >= 3
+| stats latest(error_rate) as current_error_rate, latest(_time) as last_breach by service_name
+| eval message="ALERT: " . service_name . " error rate " . current_error_rate . "% for 15+ minutes"
+
+| Disk usage threshold alert with trend prediction
+index=os sourcetype=df
+| stats latest(UsedPct) as current_pct, latest(AvailableMB) as available_mb by host, mount
+| eval alert_level=case(
+    current_pct >= 95, "CRITICAL",
+    current_pct >= 90, "WARNING",
+    current_pct >= 80, "INFO",
+    1=1, "OK"
+)
+| where alert_level != "OK"
+| eval estimated_full_hours=round(available_mb / 100, 0)
+| table host, mount, current_pct, available_mb, estimated_full_hours, alert_level
+| sort - current_pct`,
+};
+
+## Overview
+
+Production alerting queries with multi-condition evaluation, severity classification, deduplication to prevent alert storms, and automatic runbook linking. These patterns reduce noise while ensuring genuine issues are surfaced promptly.
+
+## Code
+
+```spl
+| stats avg(response_time) as latency, count(eval(status>=500)) as errors by service
+| where latency > 2000 OR errors > 100
+| eval severity=case(errors > 500, "P1", errors > 100, "P2", 1=1, "P3")
+```
+
+## Notes
+
+- Alert deduplication requires the condition to persist across multiple intervals (prevents flapping)
+- Severity classification enables routing: P1 pages on-call, P2 sends to Slack, P3 creates a ticket
+- Include runbook links in alert output so responders know where to start
+- Low traffic alerts catch outages where requests drop to zero (not just error increases)
+- Combine with maintenance windows to suppress alerts during planned deployments

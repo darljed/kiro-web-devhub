@@ -1,0 +1,163 @@
+---
+title: "Circuit Breaker Pattern"
+description: "A resilience pattern that prevents cascading failures by monitoring error rates and temporarily halting requests to failing services."
+category: "TypeScript"
+language: "typescript"
+tags: ["typescript", "resilience", "circuit-breaker", "microservices", "production-ready"]
+createdAt: "2025-03-20"
+updatedAt: "2025-04-05"
+---
+
+export const codeBlocks = {
+  main: `type CircuitState = "closed" | "open" | "half-open";
+
+interface CircuitBreakerOptions {
+  failureThreshold: number;
+  successThreshold: number;
+  timeout: number; // ms before transitioning from open to half-open
+  monitorInterval?: number;
+  onStateChange?: (from: CircuitState, to: CircuitState) => void;
+}
+
+export class CircuitBreaker {
+  private state: CircuitState = "closed";
+  private failureCount = 0;
+  private successCount = 0;
+  private lastFailureTime = 0;
+  private readonly options: Required<CircuitBreakerOptions>;
+
+  constructor(options: CircuitBreakerOptions) {
+    this.options = {
+      monitorInterval: 5000,
+      onStateChange: () => {},
+      ...options,
+    };
+  }
+
+  async execute<T>(fn: () => Promise<T>): Promise<T> {
+    if (this.state === "open") {
+      if (Date.now() - this.lastFailureTime >= this.options.timeout) {
+        this.transition("half-open");
+      } else {
+        throw new CircuitOpenError(this.getRemainingTimeout());
+      }
+    }
+
+    try {
+      const result = await fn();
+      this.onSuccess();
+      return result;
+    } catch (error) {
+      this.onFailure();
+      throw error;
+    }
+  }
+
+  private onSuccess(): void {
+    if (this.state === "half-open") {
+      this.successCount++;
+      if (this.successCount >= this.options.successThreshold) {
+        this.transition("closed");
+      }
+    }
+    this.failureCount = 0;
+  }
+
+  private onFailure(): void {
+    this.failureCount++;
+    this.lastFailureTime = Date.now();
+
+    if (this.state === "half-open") {
+      this.transition("open");
+    } else if (this.failureCount >= this.options.failureThreshold) {
+      this.transition("open");
+    }
+  }
+
+  private transition(newState: CircuitState): void {
+    const oldState = this.state;
+    this.state = newState;
+    this.failureCount = 0;
+    this.successCount = 0;
+    this.options.onStateChange(oldState, newState);
+  }
+
+  private getRemainingTimeout(): number {
+    return Math.max(0, this.options.timeout - (Date.now() - this.lastFailureTime));
+  }
+
+  getState(): CircuitState {
+    return this.state;
+  }
+
+  getStats() {
+    return {
+      state: this.state,
+      failureCount: this.failureCount,
+      successCount: this.successCount,
+      lastFailureTime: this.lastFailureTime,
+    };
+  }
+
+  reset(): void {
+    this.transition("closed");
+  }
+}
+
+export class CircuitOpenError extends Error {
+  constructor(public readonly retryAfterMs: number) {
+    super(\`Circuit breaker is open. Retry after \${retryAfterMs}ms\`);
+    this.name = "CircuitOpenError";
+  }
+}`,
+  usage: `const breaker = new CircuitBreaker({
+  failureThreshold: 5,    // Open after 5 consecutive failures
+  successThreshold: 3,    // Close after 3 successes in half-open
+  timeout: 30_000,        // Try again after 30s
+  onStateChange: (from, to) => {
+    metrics.gauge("circuit_breaker.state", to === "open" ? 1 : 0);
+    logger.warn(\`Circuit breaker: \${from} -> \${to}\`);
+  },
+});
+
+// Wrap external service calls
+async function getExternalData(id: string) {
+  try {
+    return await breaker.execute(() =>
+      fetch(\`https://api.external.com/data/\${id}\`).then(r => {
+        if (!r.ok) throw new Error(\`HTTP \${r.status}\`);
+        return r.json();
+      })
+    );
+  } catch (error) {
+    if (error instanceof CircuitOpenError) {
+      return getCachedData(id); // Fallback to cache
+    }
+    throw error;
+  }
+}`,
+};
+
+## Overview
+
+The circuit breaker pattern protects systems from cascading failures by monitoring error rates of downstream dependencies. When failures exceed a threshold, the circuit "opens" and rejects requests immediately, giving the downstream service time to recover without being overwhelmed.
+
+## Code
+
+```typescript
+const breaker = new CircuitBreaker({
+  failureThreshold: 5,
+  successThreshold: 3,
+  timeout: 30_000,
+});
+
+const result = await breaker.execute(() => callExternalService());
+```
+
+## Notes
+
+- Three states: closed (normal), open (rejecting), half-open (testing recovery)
+- In half-open state, a limited number of requests probe if the service has recovered
+- Always implement a fallback strategy (cached data, degraded response, queue for later)
+- Combine with retry logic: retry within the circuit, but let the breaker stop retrying when the service is truly down
+- Monitor state changes with metrics to track service health over time

@@ -1,0 +1,219 @@
+---
+title: "Tokio Select for Async Control Flow"
+description: "Patterns for concurrent async operations using tokio::select! with cancellation, timeouts, and graceful shutdown coordination."
+category: "Rust"
+language: "rust"
+tags: ["rust", "async", "tokio", "select", "production-ready"]
+createdAt: "2025-02-10"
+updatedAt: "2025-03-01"
+---
+
+export const codeBlocks = {
+  main: `use tokio::sync::{mpsc, oneshot, broadcast};
+use tokio::time::{self, Duration, Instant};
+use std::collections::HashMap;
+
+/// Worker that processes messages with graceful shutdown
+pub struct MessageProcessor {
+    rx: mpsc::Receiver<Message>,
+    shutdown: broadcast::Receiver<()>,
+    state: ProcessorState,
+}
+
+struct ProcessorState {
+    processed: u64,
+    errors: u64,
+    last_message_at: Option<Instant>,
+}
+
+#[derive(Debug)]
+pub enum Message {
+    Process { id: String, payload: Vec<u8>, reply: oneshot::Sender<Result<(), String>> },
+    HealthCheck { reply: oneshot::Sender<HealthStatus> },
+}
+
+#[derive(Debug)]
+pub struct HealthStatus {
+    pub processed: u64,
+    pub errors: u64,
+    pub idle_seconds: u64,
+}
+
+impl MessageProcessor {
+    pub fn new(rx: mpsc::Receiver<Message>, shutdown: broadcast::Receiver<()>) -> Self {
+        Self {
+            rx,
+            shutdown,
+            state: ProcessorState {
+                processed: 0,
+                errors: 0,
+                last_message_at: None,
+            },
+        }
+    }
+
+    pub async fn run(&mut self) {
+        let mut cleanup_interval = time::interval(Duration::from_secs(60));
+        let mut idle_timeout = time::interval(Duration::from_secs(300));
+
+        loop {
+            tokio::select! {
+                // Priority: shutdown signal (biased ensures this is checked first)
+                biased;
+
+                _ = self.shutdown.recv() => {
+                    tracing::info!(
+                        processed = self.state.processed,
+                        "Shutting down processor"
+                    );
+                    self.drain_remaining().await;
+                    break;
+                }
+
+                // Process incoming messages
+                Some(msg) = self.rx.recv() => {
+                    self.state.last_message_at = Some(Instant::now());
+                    self.handle_message(msg).await;
+                }
+
+                // Periodic cleanup
+                _ = cleanup_interval.tick() => {
+                    self.cleanup_stale_data().await;
+                }
+
+                // Idle timeout - no messages for too long
+                _ = idle_timeout.tick() => {
+                    if let Some(last) = self.state.last_message_at {
+                        if last.elapsed() > Duration::from_secs(300) {
+                            tracing::warn!("Processor idle for 5 minutes");
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    async fn handle_message(&mut self, msg: Message) {
+        match msg {
+            Message::Process { id, payload, reply } => {
+                let result = self.process_payload(&id, &payload).await;
+                match &result {
+                    Ok(()) => self.state.processed += 1,
+                    Err(_) => self.state.errors += 1,
+                }
+                let _ = reply.send(result);
+            }
+            Message::HealthCheck { reply } => {
+                let idle = self.state.last_message_at
+                    .map(|t| t.elapsed().as_secs())
+                    .unwrap_or(0);
+                let _ = reply.send(HealthStatus {
+                    processed: self.state.processed,
+                    errors: self.state.errors,
+                    idle_seconds: idle,
+                });
+            }
+        }
+    }
+
+    async fn process_payload(&self, id: &str, payload: &[u8]) -> Result<(), String> {
+        // Simulate work with timeout
+        let result = tokio::time::timeout(
+            Duration::from_secs(5),
+            self.do_work(id, payload),
+        ).await;
+
+        match result {
+            Ok(Ok(())) => Ok(()),
+            Ok(Err(e)) => Err(e),
+            Err(_) => Err(format!("Processing {} timed out", id)),
+        }
+    }
+
+    async fn do_work(&self, _id: &str, _payload: &[u8]) -> Result<(), String> {
+        tokio::time::sleep(Duration::from_millis(100)).await;
+        Ok(())
+    }
+
+    async fn drain_remaining(&mut self) {
+        // Process any remaining messages in the channel
+        while let Ok(msg) = self.rx.try_recv() {
+            self.handle_message(msg).await;
+        }
+    }
+
+    async fn cleanup_stale_data(&self) {
+        tracing::debug!("Running periodic cleanup");
+    }
+}
+
+/// Request-response pattern with timeout
+pub async fn request_with_timeout<T>(
+    tx: &mpsc::Sender<Message>,
+    build_msg: impl FnOnce(oneshot::Sender<T>) -> Message,
+    timeout: Duration,
+) -> Result<T, RequestError> {
+    let (reply_tx, reply_rx) = oneshot::channel();
+    let msg = build_msg(reply_tx);
+
+    tx.send(msg).await.map_err(|_| RequestError::ChannelClosed)?;
+
+    tokio::select! {
+        result = reply_rx => {
+            result.map_err(|_| RequestError::Cancelled)
+        }
+        _ = tokio::time::sleep(timeout) => {
+            Err(RequestError::Timeout)
+        }
+    }
+}
+
+#[derive(Debug)]
+pub enum RequestError {
+    Timeout,
+    Cancelled,
+    ChannelClosed,
+}`,
+  usage: `#[tokio::main]
+async fn main() {
+    let (msg_tx, msg_rx) = mpsc::channel(100);
+    let (shutdown_tx, shutdown_rx) = broadcast::channel(1);
+
+    let mut processor = MessageProcessor::new(msg_rx, shutdown_rx);
+    let handle = tokio::spawn(async move { processor.run().await });
+
+    // Send a request with timeout
+    let health = request_with_timeout(
+        &msg_tx,
+        |reply| Message::HealthCheck { reply },
+        Duration::from_secs(5),
+    ).await.expect("health check failed");
+
+    // Graceful shutdown
+    let _ = shutdown_tx.send(());
+    handle.await.unwrap();
+}`,
+};
+
+## Overview
+
+`tokio::select!` enables waiting on multiple async operations simultaneously, processing whichever completes first. This pattern is essential for building responsive async services that handle messages, timers, and shutdown signals concurrently.
+
+## Code
+
+```rust
+tokio::select! {
+    biased;
+    _ = shutdown.recv() => break,
+    Some(msg) = rx.recv() => handle(msg).await,
+    _ = interval.tick() => cleanup().await,
+}
+```
+
+## Notes
+
+- `biased;` ensures branches are checked in order (useful for prioritizing shutdown signals)
+- Without `biased`, select randomly picks among ready branches to prevent starvation
+- `oneshot` channels provide request-response patterns with backpressure
+- `broadcast` channels are ideal for shutdown signals (multiple receivers)
+- Always handle the case where channels close (`None` from `.recv()`)

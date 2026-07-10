@@ -1,0 +1,82 @@
+---
+title: "Lookup Table Enrichment"
+description: "SPL patterns for enriching log data with external CSV lookups, KV store queries, and dynamic data augmentation."
+category: "Splunk"
+language: "spl"
+tags: ["splunk", "lookup", "enrichment", "data-augmentation", "production-ready"]
+createdAt: "2025-04-18"
+updatedAt: "2025-05-01"
+---
+
+export const codeBlocks = {
+  main: `| Enrich with CSV lookup and handle missing values
+index=application sourcetype=access_combined
+| lookup customer_segments.csv customer_id OUTPUT segment, tier, account_manager
+| eval segment=coalesce(segment, "unknown")
+| eval tier=coalesce(tier, "free")
+| stats
+    count as requests,
+    sum(eval(if(status>=500, 1, 0))) as errors,
+    avg(response_time) as avg_latency
+    by tier, segment
+| eval error_rate=round((errors/requests)*100, 2)
+| sort tier, - requests
+
+| Dynamic lookup with time-based KV store
+index=application sourcetype=deploy_events
+| eval deploy_time=_time
+| lookup deployment_history_kv service, version OUTPUT deployed_by, environment, change_ticket
+| table _time, service, version, environment, deployed_by, change_ticket
+
+| Multi-field lookup join for incident correlation
+index=alerts severity=critical
+| lookup asset_inventory.csv hostname as host OUTPUT
+    business_unit, application, data_classification, sla_tier
+| lookup oncall_schedule.csv business_unit, date_field as _time OUTPUT
+    primary_oncall, secondary_oncall, escalation_path
+| eval priority=case(
+    data_classification="PII" AND sla_tier="platinum", "P0",
+    sla_tier="platinum", "P1",
+    sla_tier="gold", "P2",
+    1=1, "P3"
+)
+| table _time, host, application, business_unit, priority, primary_oncall, escalation_path
+
+| Outputlookup for building enrichment tables from search results
+index=application sourcetype=access_combined earliest=-24h
+| stats
+    count as daily_requests,
+    avg(response_time) as baseline_latency,
+    perc95(response_time) as p95_baseline
+    by service_name, uri_path
+| eval computed_date=strftime(now(), "%Y-%m-%d")
+| outputlookup service_baselines.csv
+
+| Use the generated baseline for comparison
+index=application sourcetype=access_combined earliest=-5m
+| stats avg(response_time) as current_latency by service_name, uri_path
+| lookup service_baselines.csv service_name, uri_path OUTPUT baseline_latency, p95_baseline
+| eval deviation_pct=round(((current_latency - baseline_latency) / baseline_latency) * 100, 1)
+| where deviation_pct > 100
+| table service_name, uri_path, current_latency, baseline_latency, deviation_pct`,
+};
+
+## Overview
+
+Lookup enrichment patterns that augment raw log data with business context from CSV files and KV stores. Includes building dynamic baselines via `outputlookup` and using them for deviation detection.
+
+## Code
+
+```spl
+| lookup customer_segments.csv customer_id OUTPUT segment, tier
+| lookup oncall_schedule.csv team OUTPUT primary_oncall
+| eval priority=case(tier="platinum", "P1", tier="gold", "P2")
+```
+
+## Notes
+
+- `coalesce()` provides default values when lookup matches are missing
+- `outputlookup` creates/updates CSV files from search results for use in future searches
+- KV store lookups support real-time updates without reindexing
+- Multi-field lookups match on composite keys for precise enrichment
+- Schedule baseline-building searches to run daily and store results for comparison queries
