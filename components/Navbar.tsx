@@ -3,9 +3,11 @@
 import Link from "next/link";
 import { useTheme } from "next-themes";
 import { Sun, Moon } from "lucide-react";
+import { useMounted } from "@/hooks/useMounted";
 
 export function Navbar() {
   const { resolvedTheme, setTheme } = useTheme();
+  const mounted = useMounted();
 
   return (
     <header className="border-b border-zinc-200 bg-white dark:border-zinc-800 dark:bg-zinc-950">
@@ -29,14 +31,23 @@ export function Navbar() {
           >
             Snippets
           </Link>
-          <button
-            onClick={() => setTheme(resolvedTheme === "dark" ? "light" : "dark")}
-            className="rounded-md p-2 text-zinc-600 transition-colors hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
-            aria-label="Toggle theme"
-          >
-            <Sun className="hidden h-5 w-5 dark:block" />
-            <Moon className="block h-5 w-5 dark:hidden" />
-          </button>
+          {mounted ? (
+            <button
+              onClick={() =>
+                setTheme(resolvedTheme === "dark" ? "light" : "dark")
+              }
+              className="rounded-md p-2 text-zinc-600 transition-colors hover:bg-zinc-100 dark:text-zinc-400 dark:hover:bg-zinc-800"
+              aria-label="Toggle theme"
+            >
+              {resolvedTheme === "dark" ? (
+                <Sun className="h-5 w-5" />
+              ) : (
+                <Moon className="h-5 w-5" />
+              )}
+            </button>
+          ) : (
+            <div className="h-9 w-9 rounded-md p-2" aria-hidden="true" />
+          )}
         </div>
       </nav>
     </header>
