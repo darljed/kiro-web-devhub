@@ -8,12 +8,11 @@ export function CTASection() {
     <section className="border-t border-zinc-200 py-16 dark:border-zinc-800 sm:py-24">
       <div className="mx-auto max-w-5xl px-4 sm:px-6">
         <AnimateOnScroll>
-          <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-purple-700 via-indigo-700 to-sky-600 px-6 py-12 text-center shadow-2xl sm:px-12 sm:py-16">
+          <div className="relative overflow-hidden rounded-2xl bg-gradient-to-br from-purple-700 via-indigo-700 to-sky-600 px-6 py-12 text-center shadow-2xl dark:from-purple-900 dark:via-indigo-900 dark:to-sky-800 sm:px-12 sm:py-16">
             {/* Animated decorative SVGs */}
             <svg
               aria-hidden="true"
-              className="absolute left-4 top-6 h-8 w-8 text-purple-300/60 sm:left-8 sm:top-8 sm:h-10 sm:w-10"
-              style={{ animation: "float 3s ease-in-out infinite" }}
+              className="absolute left-4 top-6 h-8 w-8 animate-float text-purple-300/60 sm:left-8 sm:top-8 sm:h-10 sm:w-10"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -27,8 +26,7 @@ export function CTASection() {
 
             <svg
               aria-hidden="true"
-              className="absolute right-4 top-6 h-7 w-7 text-sky-300/60 sm:right-10 sm:top-10 sm:h-9 sm:w-9"
-              style={{ animation: "spin-slow 8s linear infinite" }}
+              className="absolute right-4 top-6 h-7 w-7 animate-rotate-fast text-sky-300/60 sm:right-10 sm:top-10 sm:h-9 sm:w-9"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -42,8 +40,7 @@ export function CTASection() {
 
             <svg
               aria-hidden="true"
-              className="absolute bottom-8 left-6 h-6 w-6 text-indigo-300/50 sm:bottom-10 sm:left-12 sm:h-8 sm:w-8"
-              style={{ animation: "pulse-scale 2.5s ease-in-out infinite" }}
+              className="absolute bottom-8 left-6 h-6 w-6 animate-pulse-scale text-indigo-300/50 sm:bottom-10 sm:left-12 sm:h-8 sm:w-8"
               viewBox="0 0 24 24"
               fill="currentColor"
             >
@@ -52,8 +49,7 @@ export function CTASection() {
 
             <svg
               aria-hidden="true"
-              className="absolute bottom-6 right-6 h-7 w-7 text-purple-200/50 sm:bottom-8 sm:right-12 sm:h-9 sm:w-9"
-              style={{ animation: "float 4s ease-in-out infinite 1s" }}
+              className="absolute bottom-6 right-6 h-7 w-7 animate-float-delayed text-purple-200/50 sm:bottom-8 sm:right-12 sm:h-9 sm:w-9"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -68,8 +64,7 @@ export function CTASection() {
 
             <svg
               aria-hidden="true"
-              className="absolute left-1/4 top-4 h-5 w-5 text-sky-200/40 sm:h-6 sm:w-6"
-              style={{ animation: "rotate 6s linear infinite" }}
+              className="absolute left-1/4 top-4 h-5 w-5 animate-rotate text-sky-200/40 sm:h-6 sm:w-6"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"
@@ -82,8 +77,7 @@ export function CTASection() {
 
             <svg
               aria-hidden="true"
-              className="absolute right-1/4 bottom-4 h-5 w-5 text-indigo-200/40 sm:h-6 sm:w-6"
-              style={{ animation: "pulse-scale 3s ease-in-out infinite 0.5s" }}
+              className="absolute right-1/4 bottom-4 h-5 w-5 animate-pulse-scale-delayed text-indigo-200/40 sm:h-6 sm:w-6"
               viewBox="0 0 24 24"
               fill="none"
               stroke="currentColor"

@@ -1,0 +1,26 @@
+{
+  "id": "FEAT-002",
+  "type": "fix",
+  "description": "Address code review issues: consolidate duplicate keyframes, add prefers-reduced-motion handling, restore dark-mode gradient variant, and move inline animation styles to Tailwind custom utilities.",
+  "status": "in_progress",
+  "steps": [
+    "Remove the duplicate spin-slow keyframe from globals.css and keep only rotate. Update CTASection.tsx to reference rotate instead of spin-slow.",
+    "Add a @media (prefers-reduced-motion: reduce) block in globals.css to disable animations on decorative SVGs.",
+    "Add dark-mode gradient variant classes to the CTA card div in CTASection.tsx.",
+    "Define custom animation utilities in the @theme inline block of globals.css and replace inline style attributes in CTASection.tsx with Tailwind classes."
+  ],
+  "acceptance_criteria": [
+    "Only one rotation keyframe exists (no duplicate spin-slow/rotate)",
+    "A prefers-reduced-motion media query disables CTA animations for motion-sensitive users",
+    "The CTA gradient has a dark-mode variant",
+    "No inline style attributes for animations remain in CTASection.tsx (all use Tailwind classes)",
+    "bun run build completes without errors",
+    "bun run lint completes without errors"
+  ],
+  "verification": [
+    "Run bun run build and confirm success",
+    "Run bun run lint and confirm no errors"
+  ],
+  "blocked_reason": null,
+  "findings": null
+}

@@ -12,6 +12,12 @@
   --color-foreground: var(--foreground);
   --font-sans: var(--font-geist-sans);
   --font-mono: var(--font-geist-mono);
+  --animate-float: float 3s ease-in-out infinite;
+  --animate-float-delayed: float 4s ease-in-out infinite 1s;
+  --animate-pulse-scale: pulse-scale 2.5s ease-in-out infinite;
+  --animate-pulse-scale-delayed: pulse-scale 3s ease-in-out infinite 0.5s;
+  --animate-rotate: rotate 6s linear infinite;
+  --animate-rotate-fast: rotate 8s linear infinite;
 }
 
 .dark {
@@ -57,11 +63,9 @@ body {
   }
 }
 
-@keyframes spin-slow {
-  0% {
-    transform: rotate(0deg);
-  }
-  100% {
-    transform: rotate(360deg);
+/* Respect user motion preferences for decorative animations */
+@media (prefers-reduced-motion: reduce) {
+  svg[aria-hidden="true"] {
+    animation: none !important;
   }
 }
