@@ -1,7 +1,14 @@
 {
   "task_id": "task-dev-snippet-hub",
   "task_description": "Build a static Next.js App Router web application serving as a Dev Snippet & Content Hub with portfolio page, snippet vault with search/filter, copy-to-clipboard, and dark mode toggle. Data sourced from local TypeScript file. All pages statically generated.",
-  "status": "in_progress",
+  "status": "completed",
   "feature_order": ["FEAT-001", "FEAT-002"],
-  "blocked_reason": null
+  "blocked_reason": null,
+  "verification": {
+    "build": "pass",
+    "tests": "pass",
+    "test_quality": "pass",
+    "docker_build": "skipped",
+    "summary": "npm run build succeeds with all 9 pages statically generated (/, /_not-found, /snippets, 4x /snippets/[id]). npm run lint passes clean. Semantic review v2 APPROVED after v1 issues were fixed."
+  }
 }
