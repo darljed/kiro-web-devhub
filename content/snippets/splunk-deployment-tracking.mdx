@@ -1,0 +1,85 @@
+---
+title: "Deployment Event Correlation"
+description: "SPL query that correlates deployment events with error rate changes to identify regressions introduced by releases."
+category: "Splunk"
+language: "spl"
+tags: ["splunk-cloud", "deployments", "correlation", "error-rates", "production-ready"]
+createdAt: "2024-12-05"
+updatedAt: "2025-01-08"
+---
+
+export const codeBlocks = {
+  main: `index=deployments sourcetype=deploy_events
+| eval deploy_time = _time
+| join type=outer service_name
+    [search index=microservices sourcetype=access_combined status>=500
+    | timechart span=1h count as error_count by service_name]
+| eval time_since_deploy = round((_time - deploy_time) / 3600, 1)
+| where time_since_deploy >= 0 AND time_since_deploy <= 24
+| stats
+    first(version) as deployed_version,
+    first(deployer) as deployed_by,
+    avg(error_count) as avg_errors_post_deploy,
+    max(error_count) as max_errors_post_deploy
+    by service_name, deploy_time
+| sort - avg_errors_post_deploy
+| table service_name, deployed_version, deployed_by, deploy_time, avg_errors_post_deploy, max_errors_post_deploy`,
+  baseline: `index=microservices sourcetype=access_combined status>=500
+| bucket _time span=1h
+| stats count as error_count by service_name, _time
+| stats
+    avg(error_count) as baseline_errors,
+    stdev(error_count) as error_stdev
+    by service_name
+| eval alert_threshold = baseline_errors + (2 * error_stdev)
+| table service_name, baseline_errors, error_stdev, alert_threshold`,
+};
+
+## Overview
+
+Tracking whether a deployment caused a regression is one of the most common observability tasks. This query joins deployment events with error rates in the hours following a release, making it easy to spot which deploys introduced problems.
+
+The baseline query establishes normal error rates per service, so you can set meaningful alert thresholds rather than arbitrary static values.
+
+## Code
+
+```spl
+index=deployments sourcetype=deploy_events
+| eval deploy_time = _time
+| join type=outer service_name
+    [search index=microservices sourcetype=access_combined status>=500
+    | timechart span=1h count as error_count by service_name]
+| eval time_since_deploy = round((_time - deploy_time) / 3600, 1)
+| where time_since_deploy >= 0 AND time_since_deploy <= 24
+| stats
+    first(version) as deployed_version,
+    first(deployer) as deployed_by,
+    avg(error_count) as avg_errors_post_deploy,
+    max(error_count) as max_errors_post_deploy
+    by service_name, deploy_time
+| sort - avg_errors_post_deploy
+| table service_name, deployed_version, deployed_by, deploy_time, avg_errors_post_deploy, max_errors_post_deploy
+```
+
+## Baseline Query
+
+```spl
+index=microservices sourcetype=access_combined status>=500
+| bucket _time span=1h
+| stats count as error_count by service_name, _time
+| stats
+    avg(error_count) as baseline_errors,
+    stdev(error_count) as error_stdev
+    by service_name
+| eval alert_threshold = baseline_errors + (2 * error_stdev)
+| table service_name, baseline_errors, error_stdev, alert_threshold
+```
+
+## Notes
+
+- The `join` command can be expensive in Splunk. For high-volume environments, consider using `append` + `transaction` instead
+- The 24-hour window (`time_since_deploy <= 24`) can be adjusted based on your rollback SLA
+- Pair this with the baseline query to trigger alerts only when post-deploy errors exceed 2 standard deviations from normal
+- Ensure your deployment pipeline logs to a dedicated `index=deployments` with fields: `service_name`, `version`, `deployer`, `environment`
+- For canary deployments, add a filter on `environment=production` to exclude staging noise
+

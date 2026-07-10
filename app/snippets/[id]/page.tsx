@@ -18,8 +18,22 @@ export async function generateMetadata({
 }): Promise<Metadata> {
   const { id } = await params;
   const snippet = getSnippetById(id);
+
+  if (!snippet) {
+    return { title: "Snippet Not Found" };
+  }
+
   return {
-    title: snippet ? `${snippet.title} | Dev Hub` : "Snippet Not Found",
+    title: `${snippet.title} | Dev Hub`,
+    description: snippet.description,
+    openGraph: {
+      title: snippet.title,
+      description: snippet.description,
+      type: "article",
+    },
+    twitter: {
+      card: "summary_large_image",
+    },
   };
 }
 

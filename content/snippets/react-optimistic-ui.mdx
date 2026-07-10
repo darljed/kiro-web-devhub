@@ -1,0 +1,233 @@
+---
+title: "Optimistic UI with useOptimistic"
+description: "React 19 useOptimistic hook pattern for instant UI feedback during async form submissions with automatic rollback on failure."
+category: "React"
+language: "typescript"
+tags: ["react-19", "hooks", "optimistic-ui", "forms", "production-ready"]
+createdAt: "2024-12-08"
+updatedAt: "2025-01-12"
+---
+
+export const codeBlocks = {
+  main: `"use client";
+
+import { useOptimistic, useTransition } from "react";
+
+interface Todo {
+  id: string;
+  text: string;
+  completed: boolean;
+}
+
+type OptimisticAction =
+  | { type: "add"; todo: Todo }
+  | { type: "toggle"; id: string }
+  | { type: "delete"; id: string };
+
+export function useTodoList(initialTodos: Todo[]) {
+  const [optimisticTodos, addOptimistic] = useOptimistic(
+    initialTodos,
+    (state: Todo[], action: OptimisticAction) => {
+      switch (action.type) {
+        case "add":
+          return [...state, action.todo];
+        case "toggle":
+          return state.map((t) =>
+            t.id === action.id ? { ...t, completed: !t.completed } : t
+          );
+        case "delete":
+          return state.filter((t) => t.id !== action.id);
+        default:
+          return state;
+      }
+    }
+  );
+
+  const [isPending, startTransition] = useTransition();
+
+  return { optimisticTodos, addOptimistic, isPending, startTransition };
+}`,
+  usage: `"use client";
+
+import { useTodoList } from "./useTodoList";
+import { addTodoAction, toggleTodoAction, deleteTodoAction } from "./actions";
+
+interface Todo {
+  id: string;
+  text: string;
+  completed: boolean;
+}
+
+export function TodoList({ todos }: { todos: Todo[] }) {
+  const { optimisticTodos, addOptimistic, isPending, startTransition } =
+    useTodoList(todos);
+
+  async function handleAdd(formData: FormData) {
+    const text = formData.get("text") as string;
+    const tempId = crypto.randomUUID();
+
+    startTransition(async () => {
+      addOptimistic({ type: "add", todo: { id: tempId, text, completed: false } });
+      await addTodoAction(text);
+    });
+  }
+
+  async function handleToggle(id: string) {
+    startTransition(async () => {
+      addOptimistic({ type: "toggle", id });
+      await toggleTodoAction(id);
+    });
+  }
+
+  async function handleDelete(id: string) {
+    startTransition(async () => {
+      addOptimistic({ type: "delete", id });
+      await deleteTodoAction(id);
+    });
+  }
+
+  return (
+    <div>
+      <form action={handleAdd}>
+        <input name="text" placeholder="Add todo..." required />
+        <button type="submit" disabled={isPending}>
+          {isPending ? "Adding..." : "Add"}
+        </button>
+      </form>
+
+      <ul>
+        {optimisticTodos.map((todo) => (
+          <li key={todo.id} style={{ opacity: todo.id.includes("-") ? 0.7 : 1 }}>
+            <input
+              type="checkbox"
+              checked={todo.completed}
+              onChange={() => handleToggle(todo.id)}
+            />
+            <span>{todo.text}</span>
+            <button onClick={() => handleDelete(todo.id)}>Delete</button>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}`,
+};
+
+## Overview
+
+React 19 introduces `useOptimistic` for managing optimistic state updates. This pattern provides instant feedback to users while async operations (like server actions) are in flight. If the operation fails, React automatically rolls back to the previous state on the next render.
+
+The key insight is combining `useOptimistic` with `useTransition` to handle the async boundary cleanly. The optimistic state is only active during the transition; once the server response arrives and the component re-renders with new props, the optimistic state is discarded.
+
+## Code
+
+```typescript
+"use client";
+
+import { useOptimistic, useTransition } from "react";
+
+interface Todo {
+  id: string;
+  text: string;
+  completed: boolean;
+}
+
+type OptimisticAction =
+  | { type: "add"; todo: Todo }
+  | { type: "toggle"; id: string }
+  | { type: "delete"; id: string };
+
+export function useTodoList(initialTodos: Todo[]) {
+  const [optimisticTodos, addOptimistic] = useOptimistic(
+    initialTodos,
+    (state: Todo[], action: OptimisticAction) => {
+      switch (action.type) {
+        case "add":
+          return [...state, action.todo];
+        case "toggle":
+          return state.map((t) =>
+            t.id === action.id ? { ...t, completed: !t.completed } : t
+          );
+        case "delete":
+          return state.filter((t) => t.id !== action.id);
+        default:
+          return state;
+      }
+    }
+  );
+
+  const [isPending, startTransition] = useTransition();
+
+  return { optimisticTodos, addOptimistic, isPending, startTransition };
+}
+```
+
+## Usage
+
+```tsx
+"use client";
+
+import { useTodoList } from "./useTodoList";
+import { addTodoAction, toggleTodoAction, deleteTodoAction } from "./actions";
+
+interface Todo {
+  id: string;
+  text: string;
+  completed: boolean;
+}
+
+export function TodoList({ todos }: { todos: Todo[] }) {
+  const { optimisticTodos, addOptimistic, isPending, startTransition } =
+    useTodoList(todos);
+
+  async function handleAdd(formData: FormData) {
+    const text = formData.get("text") as string;
+    const tempId = crypto.randomUUID();
+
+    startTransition(async () => {
+      addOptimistic({ type: "add", todo: { id: tempId, text, completed: false } });
+      await addTodoAction(text);
+    });
+  }
+
+  async function handleToggle(id: string) {
+    startTransition(async () => {
+      addOptimistic({ type: "toggle", id });
+      await toggleTodoAction(id);
+    });
+  }
+
+  return (
+    <div>
+      <form action={handleAdd}>
+        <input name="text" placeholder="Add todo..." required />
+        <button type="submit" disabled={isPending}>
+          {isPending ? "Adding..." : "Add"}
+        </button>
+      </form>
+      <ul>
+        {optimisticTodos.map((todo) => (
+          <li key={todo.id}>
+            <input
+              type="checkbox"
+              checked={todo.completed}
+              onChange={() => handleToggle(todo.id)}
+            />
+            <span>{todo.text}</span>
+          </li>
+        ))}
+      </ul>
+    </div>
+  );
+}
+```
+
+## Notes
+
+- `useOptimistic` only works in client components (requires `"use client"` directive)
+- The optimistic state persists until the parent component re-renders with new data from the server
+- Pair with `useTransition` to get `isPending` status for loading indicators
+- If your server action throws, React re-renders with the original state, effectively "rolling back" the UI
+- For forms, consider combining with the `useActionState` hook for error handling
+- The reducer pattern (action types) scales well to complex entity operations
+

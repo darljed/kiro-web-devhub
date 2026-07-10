@@ -1,0 +1,285 @@
+---
+title: "Server Action Form with Zod Validation"
+description: "Type-safe Next.js server action with Zod schema validation, error handling, and a progressive enhancement form component."
+category: "Next.js"
+language: "typescript"
+tags: ["next-js", "server-actions", "zod", "forms", "validation", "production-ready"]
+createdAt: "2024-12-10"
+updatedAt: "2025-01-15"
+---
+
+export const codeBlocks = {
+  main: `"use server";
+
+import { z } from "zod";
+
+const ContactSchema = z.object({
+  name: z.string().min(2, "Name must be at least 2 characters"),
+  email: z.string().email("Please enter a valid email address"),
+  message: z.string().min(10, "Message must be at least 10 characters").max(1000),
+  priority: z.enum(["low", "medium", "high"]).default("medium"),
+});
+
+export type ContactFormState = {
+  success: boolean;
+  message: string;
+  errors?: Record<string, string[]>;
+};
+
+export async function submitContactForm(
+  _prevState: ContactFormState,
+  formData: FormData
+): Promise<ContactFormState> {
+  const raw = {
+    name: formData.get("name"),
+    email: formData.get("email"),
+    message: formData.get("message"),
+    priority: formData.get("priority"),
+  };
+
+  const result = ContactSchema.safeParse(raw);
+
+  if (!result.success) {
+    return {
+      success: false,
+      message: "Validation failed. Please check the form fields.",
+      errors: result.error.flatten().fieldErrors,
+    };
+  }
+
+  try {
+    // Replace with your actual data persistence logic
+    await saveContact(result.data);
+
+    return {
+      success: true,
+      message: "Thank you! Your message has been sent.",
+    };
+  } catch {
+    return {
+      success: false,
+      message: "Something went wrong. Please try again.",
+    };
+  }
+}
+
+async function saveContact(data: z.infer<typeof ContactSchema>) {
+  // Simulate async operation
+  await new Promise((resolve) => setTimeout(resolve, 1000));
+  console.log("Contact saved:", data);
+}`,
+  form: `"use client";
+
+import { useActionState } from "react";
+import { submitContactForm, type ContactFormState } from "./actions";
+
+const initialState: ContactFormState = {
+  success: false,
+  message: "",
+};
+
+export function ContactForm() {
+  const [state, formAction, isPending] = useActionState(
+    submitContactForm,
+    initialState
+  );
+
+  return (
+    <form action={formAction} className="space-y-4">
+      {state.message && (
+        <div
+          role="alert"
+          className={state.success ? "text-green-600" : "text-red-600"}
+        >
+          {state.message}
+        </div>
+      )}
+
+      <div>
+        <label htmlFor="name">Name</label>
+        <input
+          id="name"
+          name="name"
+          type="text"
+          required
+          minLength={2}
+          className="w-full rounded border px-3 py-2"
+        />
+        {state.errors?.name && (
+          <p className="text-sm text-red-500">{state.errors.name[0]}</p>
+        )}
+      </div>
+
+      <div>
+        <label htmlFor="email">Email</label>
+        <input
+          id="email"
+          name="email"
+          type="email"
+          required
+          className="w-full rounded border px-3 py-2"
+        />
+        {state.errors?.email && (
+          <p className="text-sm text-red-500">{state.errors.email[0]}</p>
+        )}
+      </div>
+
+      <div>
+        <label htmlFor="message">Message</label>
+        <textarea
+          id="message"
+          name="message"
+          required
+          minLength={10}
+          maxLength={1000}
+          rows={4}
+          className="w-full rounded border px-3 py-2"
+        />
+        {state.errors?.message && (
+          <p className="text-sm text-red-500">{state.errors.message[0]}</p>
+        )}
+      </div>
+
+      <div>
+        <label htmlFor="priority">Priority</label>
+        <select id="priority" name="priority" className="rounded border px-3 py-2">
+          <option value="low">Low</option>
+          <option value="medium" selected>Medium</option>
+          <option value="high">High</option>
+        </select>
+      </div>
+
+      <button
+        type="submit"
+        disabled={isPending}
+        className="rounded bg-blue-600 px-4 py-2 text-white disabled:opacity-50"
+      >
+        {isPending ? "Sending..." : "Send Message"}
+      </button>
+    </form>
+  );
+}`,
+  schema: `import { z } from "zod";
+
+// Reusable schema building blocks
+const nameField = z.string().min(2, "Name must be at least 2 characters");
+const emailField = z.string().email("Please enter a valid email address");
+
+// Contact form schema
+export const ContactSchema = z.object({
+  name: nameField,
+  email: emailField,
+  message: z.string().min(10).max(1000),
+  priority: z.enum(["low", "medium", "high"]).default("medium"),
+});
+
+// Type inference for use in components and actions
+export type ContactFormData = z.infer<typeof ContactSchema>;
+
+// Helper to format Zod errors for display
+export function formatZodErrors(error: z.ZodError) {
+  return error.flatten().fieldErrors;
+}`,
+};
+
+## Overview
+
+Server actions in Next.js provide a seamless way to handle form submissions without writing API routes. Combined with Zod for validation, you get end-to-end type safety from the form to the server. This pattern uses `useActionState` (React 19) for managing form state and supports progressive enhancement, meaning the form works even without JavaScript.
+
+## Code
+
+```typescript
+"use server";
+
+import { z } from "zod";
+
+const ContactSchema = z.object({
+  name: z.string().min(2, "Name must be at least 2 characters"),
+  email: z.string().email("Please enter a valid email address"),
+  message: z.string().min(10, "Message must be at least 10 characters").max(1000),
+  priority: z.enum(["low", "medium", "high"]).default("medium"),
+});
+
+export type ContactFormState = {
+  success: boolean;
+  message: string;
+  errors?: Record<string, string[]>;
+};
+
+export async function submitContactForm(
+  _prevState: ContactFormState,
+  formData: FormData
+): Promise<ContactFormState> {
+  const raw = {
+    name: formData.get("name"),
+    email: formData.get("email"),
+    message: formData.get("message"),
+    priority: formData.get("priority"),
+  };
+
+  const result = ContactSchema.safeParse(raw);
+
+  if (!result.success) {
+    return {
+      success: false,
+      message: "Validation failed. Please check the form fields.",
+      errors: result.error.flatten().fieldErrors,
+    };
+  }
+
+  try {
+    await saveContact(result.data);
+    return { success: true, message: "Thank you! Your message has been sent." };
+  } catch {
+    return { success: false, message: "Something went wrong. Please try again." };
+  }
+}
+```
+
+## Form Component
+
+```tsx
+"use client";
+
+import { useActionState } from "react";
+import { submitContactForm, type ContactFormState } from "./actions";
+
+const initialState: ContactFormState = { success: false, message: "" };
+
+export function ContactForm() {
+  const [state, formAction, isPending] = useActionState(
+    submitContactForm,
+    initialState
+  );
+
+  return (
+    <form action={formAction} className="space-y-4">
+      {state.message && (
+        <div role="alert" className={state.success ? "text-green-600" : "text-red-600"}>
+          {state.message}
+        </div>
+      )}
+
+      <div>
+        <label htmlFor="name">Name</label>
+        <input id="name" name="name" type="text" required minLength={2} />
+        {state.errors?.name && <p className="text-red-500">{state.errors.name[0]}</p>}
+      </div>
+
+      <button type="submit" disabled={isPending}>
+        {isPending ? "Sending..." : "Send Message"}
+      </button>
+    </form>
+  );
+}
+```
+
+## Notes
+
+- Server actions run exclusively on the server, so secrets and database connections are safe
+- The `useActionState` hook replaces the older `useFormState` from React 18
+- Add `minLength`, `required`, and `type` attributes for HTML validation as a first layer of defense
+- Zod validation runs server-side as a second layer, catching anything that bypasses client validation
+- The `_prevState` parameter is required by the action signature but you can ignore it if you do not need form state continuity
+- For file uploads, use `formData.get("file")` and validate with `z.instanceof(File)`
+
