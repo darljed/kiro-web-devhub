@@ -21,6 +21,7 @@ export function SnippetSearch({ snippets }: { snippets: Snippet[] }) {
         <input
           type="text"
           placeholder="Search snippets..."
+          aria-label="Search snippets"
           value={searchQuery}
           onChange={(e) => setSearchQuery(e.target.value)}
           className="w-full rounded-lg border border-zinc-300 bg-white px-4 py-2.5 text-sm text-zinc-900 placeholder-zinc-400 outline-none transition-colors focus:border-zinc-500 focus:ring-1 focus:ring-zinc-500 dark:border-zinc-700 dark:bg-zinc-900 dark:text-zinc-100 dark:placeholder-zinc-500 dark:focus:border-zinc-400 dark:focus:ring-zinc-400 sm:max-w-md"
