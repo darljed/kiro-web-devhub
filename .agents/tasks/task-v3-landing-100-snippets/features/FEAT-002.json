@@ -2,7 +2,7 @@
   "id": "FEAT-002",
   "type": "feat",
   "description": "Redesign the landing page: update Hero, Features, Stats, CTA sections, add new Live Preview and Categories sections. Remove or keep UseCasesSection as appropriate.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Rewrite components/landing/HeroSection.tsx: Change headline to emphasize AI-ready pattern library value prop ('Your team's AI-ready pattern library. The battle-tested snippets AI can't generate from scratch.'). Keep AnimateOnScroll/useMounted patterns. Use semantic HTML, responsive Tailwind.",
     "Rewrite components/landing/FeaturesSection.tsx: Replace 4 features with: 'Copy as AI Prompt' (format snippets for Claude/ChatGPT in one click), 'Battle-Tested Patterns' (real production code not toy examples), '120+ Snippets' (massive library across 15+ languages), 'Zero Backend' (fully static, deploys anywhere, loads instantly). Use lucide-react icons instead of custom illustration components.",
@@ -31,5 +31,5 @@
     "Run: npm run lint (must pass)"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "Successfully redesigned landing page. Removed UseCasesSection from page layout (component file retained but unused). Used lucide-react icons throughout. CategoriesSection counts match actual snippet distribution from FEAT-001 findings. Build generates all 249 static pages successfully. Lint passes clean."
 }
