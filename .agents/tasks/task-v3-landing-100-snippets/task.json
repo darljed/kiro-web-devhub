@@ -9,6 +9,6 @@
     "tests": "pass",
     "test_quality": "pass",
     "docker_build": "skipped",
-    "summary": "npm run build generates all 249 static pages successfully (122 snippets + OG images + index pages). npm run lint passes with no errors."
+    "summary": "npm run build generates 251 static pages (123 snippets + OG images + index pages). npm run lint passes with no errors. Semantic review v2 APPROVED."
   }
 }
