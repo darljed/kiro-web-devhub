@@ -1,0 +1,200 @@
+---
+title: "CLI Progress Bar"
+description: "A terminal-friendly progress bar with ETA calculation, transfer speed display, and multi-bar support for concurrent operations."
+category: "Go"
+language: "go"
+tags: ["go", "cli", "progress-bar", "terminal", "production-ready"]
+createdAt: "2025-03-20"
+updatedAt: "2025-04-05"
+---
+
+export const codeBlocks = {
+  main: `package progress
+
+import (
+	"fmt"
+	"io"
+	"strings"
+	"sync"
+	"time"
+)
+
+type Bar struct {
+	mu          sync.Mutex
+	total       int64
+	current     int64
+	width       int
+	description string
+	startTime   time.Time
+	output      io.Writer
+	done        bool
+}
+
+func New(total int64, description string, output io.Writer) *Bar {
+	return &Bar{
+		total:       total,
+		width:       40,
+		description: description,
+		startTime:   time.Now(),
+		output:      output,
+	}
+}
+
+func (b *Bar) SetWidth(width int) *Bar {
+	b.width = width
+	return b
+}
+
+func (b *Bar) Add(n int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.current += n
+	if b.current > b.total {
+		b.current = b.total
+	}
+	b.render()
+}
+
+func (b *Bar) Set(n int64) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.current = n
+	b.render()
+}
+
+func (b *Bar) Finish() {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	b.current = b.total
+	b.done = true
+	b.render()
+	fmt.Fprintln(b.output)
+}
+
+func (b *Bar) render() {
+	pct := float64(b.current) / float64(b.total)
+	filled := int(pct * float64(b.width))
+	if filled > b.width {
+		filled = b.width
+	}
+
+	bar := strings.Repeat("█", filled) + strings.Repeat("░", b.width-filled)
+
+	elapsed := time.Since(b.startTime)
+	speed := float64(b.current) / elapsed.Seconds()
+
+	var eta string
+	if b.current > 0 && !b.done {
+		remaining := float64(b.total-b.current) / speed
+		eta = formatDuration(time.Duration(remaining) * time.Second)
+	} else if b.done {
+		eta = formatDuration(elapsed)
+	} else {
+		eta = "calculating..."
+	}
+
+	fmt.Fprintf(b.output, "\r%s |%s| %3.0f%% (%d/%d) [%s, %.0f items/s]",
+		b.description, bar, pct*100, b.current, b.total, eta, speed)
+}
+
+func formatDuration(d time.Duration) string {
+	if d < time.Minute {
+		return fmt.Sprintf("%ds", int(d.Seconds()))
+	}
+	if d < time.Hour {
+		return fmt.Sprintf("%dm%ds", int(d.Minutes()), int(d.Seconds())%60)
+	}
+	return fmt.Sprintf("%dh%dm", int(d.Hours()), int(d.Minutes())%60)
+}
+
+// MultiProgress manages multiple progress bars
+type MultiProgress struct {
+	mu   sync.Mutex
+	bars []*Bar
+	out  io.Writer
+}
+
+func NewMulti(out io.Writer) *MultiProgress {
+	return &MultiProgress{out: out}
+}
+
+func (mp *MultiProgress) AddBar(total int64, description string) *Bar {
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	bar := New(total, description, mp.out)
+	mp.bars = append(mp.bars, bar)
+	return bar
+}
+
+func (mp *MultiProgress) Render() {
+	mp.mu.Lock()
+	defer mp.mu.Unlock()
+	// Move cursor up for all bars
+	if len(mp.bars) > 1 {
+		fmt.Fprintf(mp.out, "\x1b[%dA", len(mp.bars))
+	}
+	for _, bar := range mp.bars {
+		bar.mu.Lock()
+		bar.render()
+		fmt.Fprintln(mp.out)
+		bar.mu.Unlock()
+	}
+}
+
+// ProgressReader wraps an io.Reader with progress tracking
+type ProgressReader struct {
+	reader io.Reader
+	bar    *Bar
+}
+
+func NewReader(reader io.Reader, total int64, description string, out io.Writer) *ProgressReader {
+	return &ProgressReader{
+		reader: reader,
+		bar:    New(total, description, out),
+	}
+}
+
+func (pr *ProgressReader) Read(p []byte) (int, error) {
+	n, err := pr.reader.Read(p)
+	pr.bar.Add(int64(n))
+	if err == io.EOF {
+		pr.bar.Finish()
+	}
+	return n, err
+}`,
+  usage: `// Simple progress bar
+bar := progress.New(1000, "Processing", os.Stderr)
+for i := 0; i < 1000; i++ {
+    doWork(items[i])
+    bar.Add(1)
+}
+bar.Finish()
+
+// Track file download progress
+resp, _ := http.Get(url)
+reader := progress.NewReader(resp.Body, resp.ContentLength, "Downloading", os.Stderr)
+io.Copy(file, reader)
+
+// Output:
+// Processing |████████████████████░░░░░░░░░░░░░░░░░░░░| 50% (500/1000) [5s, 100 items/s]`,
+};
+
+## Overview
+
+A terminal progress bar that shows completion percentage, a visual bar, ETA estimation, and throughput. Supports concurrent updates from goroutines and wraps `io.Reader` for tracking file downloads or stream processing.
+
+## Code
+
+```go
+bar := progress.New(total, "Downloading", os.Stderr)
+bar.Add(chunkSize)
+bar.Finish()
+```
+
+## Notes
+
+- `\r` carriage return overwrites the current line for smooth animation
+- Mutex protection allows safe concurrent `Add()` calls from multiple goroutines
+- `ProgressReader` wraps any `io.Reader` for transparent download/copy tracking
+- ETA calculation uses simple linear extrapolation from current speed
+- Avoid rendering too frequently in hot loops; batch updates for performance

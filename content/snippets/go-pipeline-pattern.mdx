@@ -1,0 +1,213 @@
+---
+title: "Stream Processing Pipeline"
+description: "A type-safe streaming data pipeline using Go generics with composable stages, error handling, and backpressure."
+category: "Go"
+language: "go"
+tags: ["go", "pipeline", "streaming", "generics", "production-ready"]
+createdAt: "2025-03-30"
+updatedAt: "2025-04-15"
+---
+
+export const codeBlocks = {
+  main: `package stream
+
+import (
+	"context"
+	"sync"
+)
+
+// Stream represents a typed data stream with error handling
+type Stream[T any] struct {
+	ch  <-chan T
+	err <-chan error
+}
+
+// From creates a stream from a channel
+func From[T any](ctx context.Context, source func(ctx context.Context, out chan<- T) error) Stream[T] {
+	ch := make(chan T, 64)
+	errCh := make(chan error, 1)
+
+	go func() {
+		defer close(ch)
+		if err := source(ctx, ch); err != nil {
+			errCh <- err
+		}
+		close(errCh)
+	}()
+
+	return Stream[T]{ch: ch, err: errCh}
+}
+
+// FromSlice creates a stream from a slice
+func FromSlice[T any](ctx context.Context, items []T) Stream[T] {
+	return From(ctx, func(ctx context.Context, out chan<- T) error {
+		for _, item := range items {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			case out <- item:
+			}
+		}
+		return nil
+	})
+}
+
+// Map transforms each element in the stream
+func Map[In any, Out any](ctx context.Context, input Stream[In], fn func(In) (Out, error)) Stream[Out] {
+	return From(ctx, func(ctx context.Context, out chan<- Out) error {
+		for item := range input.ch {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			result, err := fn(item)
+			if err != nil {
+				return err
+			}
+			out <- result
+		}
+		return nil
+	})
+}
+
+// Filter removes elements that don't match the predicate
+func Filter[T any](ctx context.Context, input Stream[T], pred func(T) bool) Stream[T] {
+	return From(ctx, func(ctx context.Context, out chan<- T) error {
+		for item := range input.ch {
+			select {
+			case <-ctx.Done():
+				return ctx.Err()
+			default:
+			}
+			if pred(item) {
+				out <- item
+			}
+		}
+		return nil
+	})
+}
+
+// Reduce collects all elements into a single value
+func Reduce[T any, R any](ctx context.Context, input Stream[T], initial R, fn func(R, T) R) (R, error) {
+	result := initial
+	for item := range input.ch {
+		select {
+		case <-ctx.Done():
+			return result, ctx.Err()
+		default:
+		}
+		result = fn(result, item)
+	}
+	// Check for upstream errors
+	if err, ok := <-input.err; ok && err != nil {
+		return result, err
+	}
+	return result, nil
+}
+
+// Collect gathers all stream elements into a slice
+func Collect[T any](ctx context.Context, input Stream[T]) ([]T, error) {
+	var results []T
+	for item := range input.ch {
+		results = append(results, item)
+	}
+	if err, ok := <-input.err; ok && err != nil {
+		return results, err
+	}
+	return results, nil
+}
+
+// ParallelMap applies fn with bounded concurrency
+func ParallelMap[In any, Out any](ctx context.Context, input Stream[In], concurrency int, fn func(In) (Out, error)) Stream[Out] {
+	return From(ctx, func(ctx context.Context, out chan<- Out) error {
+		var wg sync.WaitGroup
+		sem := make(chan struct{}, concurrency)
+
+		for item := range input.ch {
+			select {
+			case <-ctx.Done():
+				break
+			case sem <- struct{}{}:
+			}
+
+			wg.Add(1)
+			go func(i In) {
+				defer wg.Done()
+				defer func() { <-sem }()
+				result, err := fn(i)
+				if err == nil {
+					out <- result
+				}
+			}(item)
+		}
+		wg.Wait()
+		return nil
+	})
+}
+
+// ForEach consumes the stream, calling fn for each element
+func ForEach[T any](ctx context.Context, input Stream[T], fn func(T) error) error {
+	for item := range input.ch {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		default:
+		}
+		if err := fn(item); err != nil {
+			return err
+		}
+	}
+	if err, ok := <-input.err; ok && err != nil {
+		return err
+	}
+	return nil
+}`,
+  usage: `ctx := context.Background()
+
+// Build a processing pipeline
+results, err := stream.Collect(ctx,
+    stream.Map(ctx,
+        stream.Filter(ctx,
+            stream.FromSlice(ctx, records),
+            func(r Record) bool { return r.Status == "active" },
+        ),
+        func(r Record) (ProcessedRecord, error) {
+            return transform(r)
+        },
+    ),
+)
+
+// Parallel processing with concurrency limit
+processed := stream.ParallelMap(ctx,
+    stream.FromSlice(ctx, urls),
+    10, // max 10 concurrent
+    func(url string) (Response, error) {
+        return httpGet(url)
+    },
+)
+err := stream.ForEach(ctx, processed, saveToDatabase)`,
+};
+
+## Overview
+
+A functional streaming pipeline using Go generics that composes Map, Filter, Reduce, and ParallelMap operations on typed channels. Each stage processes data concurrently with automatic backpressure via buffered channels.
+
+## Code
+
+```go
+result, err := stream.Collect(ctx,
+    stream.Map(ctx,
+        stream.Filter(ctx, input, predicate),
+        transformer,
+    ),
+)
+```
+
+## Notes
+
+- Each pipeline stage runs in its own goroutine, connected by typed channels
+- Backpressure is automatic: producers block when the next stage's buffer is full
+- `ParallelMap` bounds concurrency with a semaphore while maintaining high throughput
+- Context cancellation propagates through the entire pipeline for clean shutdown
+- Error channels allow upstream errors to propagate to the final consumer

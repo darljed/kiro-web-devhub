@@ -1,0 +1,159 @@
+---
+title: "Blue-Green Deployment"
+description: "Kubernetes blue-green deployment strategy with service switching, automated health validation, and instant rollback capability."
+category: "Kubernetes"
+language: "yaml"
+tags: ["kubernetes", "blue-green", "deployment", "zero-downtime", "production-ready"]
+createdAt: "2025-03-15"
+updatedAt: "2025-04-01"
+---
+
+export const codeBlocks = {
+  main: `# Blue deployment (current production)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-blue
+  namespace: production
+  labels:
+    app: myapp
+    slot: blue
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: myapp
+      slot: blue
+  template:
+    metadata:
+      labels:
+        app: myapp
+        slot: blue
+        version: v1.2.0
+    spec:
+      containers:
+        - name: app
+          image: registry.example.com/myapp:v1.2.0
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            successThreshold: 3
+          livenessProbe:
+            httpGet:
+              path: /livez
+              port: 8080
+            initialDelaySeconds: 30
+            periodSeconds: 10
+
+---
+# Green deployment (new version, ready to switch)
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: app-green
+  namespace: production
+  labels:
+    app: myapp
+    slot: green
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: myapp
+      slot: green
+  template:
+    metadata:
+      labels:
+        app: myapp
+        slot: green
+        version: v1.3.0
+    spec:
+      containers:
+        - name: app
+          image: registry.example.com/myapp:v1.3.0
+          ports:
+            - containerPort: 8080
+          resources:
+            requests:
+              cpu: "250m"
+              memory: "256Mi"
+            limits:
+              cpu: "500m"
+              memory: "512Mi"
+          readinessProbe:
+            httpGet:
+              path: /healthz
+              port: 8080
+            initialDelaySeconds: 10
+            periodSeconds: 5
+            successThreshold: 3
+
+---
+# Production service (selector determines active slot)
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-production
+  namespace: production
+spec:
+  selector:
+    app: myapp
+    slot: blue  # Switch to 'green' to promote
+  ports:
+    - port: 80
+      targetPort: 8080
+  type: ClusterIP
+
+---
+# Preview service (always points to inactive slot for testing)
+apiVersion: v1
+kind: Service
+metadata:
+  name: app-preview
+  namespace: production
+spec:
+  selector:
+    app: myapp
+    slot: green  # Points to new version for pre-production testing
+  ports:
+    - port: 80
+      targetPort: 8080
+  type: ClusterIP`,
+};
+
+## Overview
+
+Blue-green deployment maintains two identical environments. Traffic is switched atomically by updating the Service selector, enabling instant rollback by reverting the selector. The inactive slot serves as a pre-production test environment.
+
+## Code
+
+```bash
+# Promote green to production (instant switch)
+kubectl patch service app-production -n production \
+  -p '{"spec":{"selector":{"slot":"green"}}}'
+
+# Rollback to blue (instant)
+kubectl patch service app-production -n production \
+  -p '{"spec":{"selector":{"slot":"blue"}}}'
+```
+
+## Notes
+
+- Service selector change is atomic, providing zero-downtime deployment
+- The preview service enables testing the new version in production infrastructure before switching
+- `successThreshold: 3` requires three consecutive health checks before marking ready
+- Rollback is a single `kubectl patch` command with no pod restarts needed
+- After successful promotion, update the old slot with the next version for the next release
+- Doubles resource requirements (both slots running simultaneously)

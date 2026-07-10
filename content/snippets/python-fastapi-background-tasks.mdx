@@ -1,0 +1,207 @@
+---
+title: "FastAPI Background Tasks"
+description: "Patterns for running background work in FastAPI including fire-and-forget tasks, scheduled jobs, and task queues with error handling."
+category: "Python"
+language: "python"
+tags: ["python", "fastapi", "background-tasks", "async", "production-ready"]
+createdAt: "2025-04-01"
+updatedAt: "2025-04-15"
+---
+
+export const codeBlocks = {
+  main: `import asyncio
+import logging
+from typing import Any, Callable, Awaitable
+from datetime import datetime, timedelta
+from collections.abc import AsyncIterator
+from contextlib import asynccontextmanager
+
+from fastapi import FastAPI, BackgroundTasks, Depends
+from pydantic import BaseModel
+
+logger = logging.getLogger(__name__)
+
+
+# Simple background task with error handling
+async def send_welcome_email(user_id: str, email: str) -> None:
+    """Fire-and-forget email task."""
+    try:
+        # Simulate sending email
+        await asyncio.sleep(2)
+        logger.info("Welcome email sent to %s", email)
+    except Exception as exc:
+        logger.error("Failed to send email to %s: %s", email, exc)
+        # Queue for retry or alert
+
+
+async def update_analytics(event: str, metadata: dict) -> None:
+    """Background analytics event processing."""
+    try:
+        await asyncio.sleep(0.5)
+        logger.info("Analytics event recorded: %s", event)
+    except Exception as exc:
+        logger.error("Analytics failed: %s", exc)
+
+
+# Task queue for heavier background work
+class TaskQueue:
+    """In-process async task queue with concurrency control."""
+
+    def __init__(self, max_workers: int = 5):
+        self._queue: asyncio.Queue[tuple[Callable, tuple, dict]] = asyncio.Queue()
+        self._max_workers = max_workers
+        self._workers: list[asyncio.Task] = []
+        self._running = False
+
+    async def start(self) -> None:
+        self._running = True
+        self._workers = [
+            asyncio.create_task(self._worker(i))
+            for i in range(self._max_workers)
+        ]
+        logger.info("TaskQueue started with %d workers", self._max_workers)
+
+    async def stop(self) -> None:
+        self._running = False
+        # Signal workers to stop
+        for _ in self._workers:
+            await self._queue.put((None, (), {}))  # type: ignore
+        await asyncio.gather(*self._workers, return_exceptions=True)
+        logger.info("TaskQueue stopped")
+
+    async def enqueue(
+        self,
+        func: Callable[..., Awaitable[Any]],
+        *args: Any,
+        **kwargs: Any,
+    ) -> None:
+        await self._queue.put((func, args, kwargs))
+
+    async def _worker(self, worker_id: int) -> None:
+        while self._running:
+            func, args, kwargs = await self._queue.get()
+            if func is None:
+                break
+            try:
+                await func(*args, **kwargs)
+            except Exception as exc:
+                logger.error("Task failed in worker %d: %s", worker_id, exc)
+            finally:
+                self._queue.task_done()
+
+    @property
+    def pending(self) -> int:
+        return self._queue.qsize()
+
+
+# Scheduled task runner
+class Scheduler:
+    """Periodic task scheduler using asyncio."""
+
+    def __init__(self):
+        self._tasks: list[asyncio.Task] = []
+
+    def schedule(
+        self,
+        func: Callable[[], Awaitable[None]],
+        interval: timedelta,
+        name: str = "",
+    ) -> None:
+        task = asyncio.create_task(
+            self._run_periodic(func, interval.total_seconds(), name or func.__name__)
+        )
+        self._tasks.append(task)
+
+    async def _run_periodic(self, func: Callable, interval: float, name: str) -> None:
+        while True:
+            try:
+                await func()
+            except Exception as exc:
+                logger.error("Scheduled task '%s' failed: %s", name, exc)
+            await asyncio.sleep(interval)
+
+    async def shutdown(self) -> None:
+        for task in self._tasks:
+            task.cancel()
+        await asyncio.gather(*self._tasks, return_exceptions=True)
+
+
+# Application setup with lifespan
+task_queue = TaskQueue(max_workers=3)
+scheduler = Scheduler()
+
+
+@asynccontextmanager
+async def lifespan(app: FastAPI) -> AsyncIterator[None]:
+    # Startup
+    await task_queue.start()
+    scheduler.schedule(cleanup_expired_sessions, timedelta(minutes=5))
+    scheduler.schedule(sync_metrics, timedelta(seconds=30))
+    yield
+    # Shutdown
+    await task_queue.stop()
+    await scheduler.shutdown()
+
+
+app = FastAPI(lifespan=lifespan)
+
+
+async def cleanup_expired_sessions() -> None:
+    logger.info("Cleaning up expired sessions")
+
+
+async def sync_metrics() -> None:
+    logger.info("Syncing metrics")
+
+
+class CreateUserRequest(BaseModel):
+    email: str
+    name: str
+
+
+@app.post("/api/users")
+async def create_user(
+    request: CreateUserRequest,
+    background_tasks: BackgroundTasks,
+):
+    user_id = "generated_id"
+    # Light tasks: use FastAPI BackgroundTasks
+    background_tasks.add_task(send_welcome_email, user_id, request.email)
+    background_tasks.add_task(update_analytics, "user_created", {"user_id": user_id})
+
+    return {"id": user_id, "email": request.email}
+
+
+@app.post("/api/reports/generate")
+async def generate_report(report_type: str):
+    # Heavy tasks: use the task queue
+    await task_queue.enqueue(generate_report_task, report_type)
+    return {"status": "queued", "pending": task_queue.pending}
+
+
+async def generate_report_task(report_type: str) -> None:
+    logger.info("Generating %s report...", report_type)
+    await asyncio.sleep(30)  # Heavy computation
+    logger.info("Report %s complete", report_type)`,
+};
+
+## Overview
+
+Background task patterns for FastAPI: lightweight fire-and-forget tasks via `BackgroundTasks`, a managed task queue with concurrency control for heavier work, and a periodic scheduler for recurring jobs. All integrate with FastAPI's lifespan for clean startup/shutdown.
+
+## Code
+
+```python
+@app.post("/users")
+async def create_user(request: Request, background_tasks: BackgroundTasks):
+    background_tasks.add_task(send_email, user.email)
+    return {"id": user.id}
+```
+
+## Notes
+
+- `BackgroundTasks` runs after the response is sent but within the same process (no persistence)
+- The `TaskQueue` provides bounded concurrency for CPU/IO intensive operations
+- The `Scheduler` replaces cron for simple periodic tasks within the application process
+- FastAPI lifespan ensures clean startup and graceful shutdown of background workers
+- For production workloads requiring persistence and retries, use Celery, ARQ, or Dramatiq

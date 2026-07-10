@@ -1,0 +1,167 @@
+---
+title: "Server Component Data Fetching"
+description: "Patterns for data fetching in React Server Components with parallel loading, error handling, caching, and streaming with Suspense."
+category: "React"
+language: "typescript"
+tags: ["react", "server-components", "data-fetching", "nextjs", "production-ready"]
+createdAt: "2025-03-01"
+updatedAt: "2025-03-20"
+---
+
+export const codeBlocks = {
+  main: `// lib/data.ts - Server-side data fetching utilities
+import { cache } from "react";
+
+interface FetchOptions extends RequestInit {
+  revalidate?: number | false;
+  tags?: string[];
+}
+
+async function fetchWithError<T>(url: string, options?: FetchOptions): Promise<T> {
+  const { revalidate, tags, ...init } = options ?? {};
+
+  const response = await fetch(url, {
+    ...init,
+    next: {
+      revalidate: revalidate ?? 60,
+      tags: tags ?? [],
+    },
+  });
+
+  if (!response.ok) {
+    throw new Error(\`Failed to fetch \${url}: \${response.status} \${response.statusText}\`);
+  }
+
+  return response.json();
+}
+
+// Cache per-request using React.cache
+export const getUser = cache(async (userId: string) => {
+  return fetchWithError<{ id: string; name: string; email: string; avatar: string }>(
+    \`\${process.env.API_URL}/users/\${userId}\`,
+    { tags: [\`user-\${userId}\`] }
+  );
+});
+
+export const getUserPosts = cache(async (userId: string) => {
+  return fetchWithError<{ id: string; title: string; publishedAt: string }[]>(
+    \`\${process.env.API_URL}/users/\${userId}/posts\`,
+    { tags: [\`user-posts-\${userId}\`], revalidate: 300 }
+  );
+});
+
+export const getNotifications = cache(async (userId: string) => {
+  return fetchWithError<{ id: string; message: string; read: boolean }[]>(
+    \`\${process.env.API_URL}/users/\${userId}/notifications\`,
+    { revalidate: 30 }
+  );
+});
+
+// Page component with parallel data fetching
+// app/dashboard/page.tsx
+import { Suspense } from "react";
+
+export default async function DashboardPage() {
+  // Initiate all fetches in parallel
+  const userPromise = getUser("current");
+  const postsPromise = getUserPosts("current");
+
+  // Await critical data
+  const user = await userPromise;
+
+  return (
+    <main className="max-w-6xl mx-auto p-6">
+      <header className="mb-8">
+        <h1 className="text-2xl font-bold">Welcome, {user.name}</h1>
+      </header>
+
+      {/* Stream non-critical sections */}
+      <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
+        <Suspense fallback={<PostsSkeleton />}>
+          <PostsList postsPromise={postsPromise} />
+        </Suspense>
+
+        <Suspense fallback={<NotificationsSkeleton />}>
+          <NotificationsPanel userId={user.id} />
+        </Suspense>
+      </div>
+    </main>
+  );
+}
+
+// Streaming component that awaits its own data
+async function PostsList({ postsPromise }: { postsPromise: Promise<{ id: string; title: string; publishedAt: string }[]> }) {
+  const posts = await postsPromise;
+  return (
+    <section>
+      <h2 className="text-xl font-semibold mb-4">Your Posts</h2>
+      <ul className="space-y-2">
+        {posts.map((post) => (
+          <li key={post.id} className="p-3 border rounded">
+            <p className="font-medium">{post.title}</p>
+            <time className="text-sm text-gray-500">{post.publishedAt}</time>
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}
+
+async function NotificationsPanel({ userId }: { userId: string }) {
+  const notifications = await getNotifications(userId);
+  const unread = notifications.filter((n) => !n.read);
+  return (
+    <section>
+      <h2 className="text-xl font-semibold mb-4">
+        Notifications {unread.length > 0 && <span className="text-red-500">({unread.length})</span>}
+      </h2>
+      <ul className="space-y-2">
+        {notifications.slice(0, 5).map((n) => (
+          <li key={n.id} className={\`p-3 border rounded \${!n.read ? "bg-blue-50" : ""}\`}>
+            {n.message}
+          </li>
+        ))}
+      </ul>
+    </section>
+  );
+}`,
+  usage: `// Revalidation via Server Actions
+"use server";
+import { revalidateTag } from "next/cache";
+
+export async function updateProfile(formData: FormData) {
+  await db.users.update({
+    name: formData.get("name") as string,
+  });
+  revalidateTag("user-current");
+}`,
+};
+
+## Overview
+
+Server Component data fetching patterns that leverage React's streaming architecture. Critical data loads immediately while non-critical sections stream in via Suspense, providing fast initial page loads without client-side waterfalls.
+
+## Code
+
+```typescript
+// Parallel fetch initiation
+const userPromise = getUser(id);
+const postsPromise = getPosts(id);
+
+const user = await userPromise;
+
+return (
+  <Suspense fallback={<Skeleton />}>
+    <Posts postsPromise={postsPromise} />
+  </Suspense>
+);
+```
+
+## Notes
+
+- `React.cache()` deduplicates identical requests within the same render pass
+- Start fetches before `await` to run them in parallel (not sequentially)
+- Pass promises to child components to enable streaming without waterfall
+- Use `revalidateTag()` in Server Actions for targeted cache invalidation
+- `next.revalidate` controls how long data is cached (ISR-style)
+- Suspense boundaries define the loading granularity seen by users

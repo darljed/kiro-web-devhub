@@ -1,0 +1,120 @@
+---
+title: "Materialized CTEs and Query Decomposition"
+description: "Complex query decomposition using CTEs for readability, performance optimization with materialized CTEs, and query plan control."
+category: "SQL"
+language: "sql"
+tags: ["sql", "cte", "optimization", "readability", "production-ready"]
+createdAt: "2025-04-20"
+updatedAt: "2025-05-05"
+---
+
+export const codeBlocks = {
+  main: `-- Customer cohort analysis using layered CTEs
+WITH
+-- Step 1: Identify customer cohorts by first purchase month
+cohorts AS (
+    SELECT
+        customer_id,
+        DATE_TRUNC('month', MIN(order_date)) AS cohort_month
+    FROM orders
+    GROUP BY customer_id
+),
+
+-- Step 2: Calculate activity per customer per month
+monthly_activity AS (
+    SELECT
+        c.customer_id,
+        c.cohort_month,
+        DATE_TRUNC('month', o.order_date) AS activity_month,
+        COUNT(*) AS order_count,
+        SUM(o.amount) AS revenue
+    FROM cohorts c
+    JOIN orders o ON o.customer_id = c.customer_id
+    GROUP BY c.customer_id, c.cohort_month, DATE_TRUNC('month', o.order_date)
+),
+
+-- Step 3: Calculate months since cohort for retention grid
+retention_data AS (
+    SELECT
+        cohort_month,
+        EXTRACT(YEAR FROM age(activity_month, cohort_month)) * 12 +
+        EXTRACT(MONTH FROM age(activity_month, cohort_month)) AS months_since,
+        COUNT(DISTINCT customer_id) AS active_customers,
+        SUM(revenue) AS cohort_revenue
+    FROM monthly_activity
+    GROUP BY cohort_month, activity_month
+),
+
+-- Step 4: Cohort sizes for percentage calculation
+cohort_sizes AS (
+    SELECT cohort_month, COUNT(*) AS cohort_size
+    FROM cohorts
+    GROUP BY cohort_month
+)
+
+-- Final: Retention percentages
+SELECT
+    r.cohort_month,
+    cs.cohort_size,
+    r.months_since,
+    r.active_customers,
+    ROUND(r.active_customers * 100.0 / cs.cohort_size, 1) AS retention_pct,
+    r.cohort_revenue,
+    ROUND(r.cohort_revenue / r.active_customers, 2) AS revenue_per_active
+FROM retention_data r
+JOIN cohort_sizes cs ON cs.cohort_month = r.cohort_month
+WHERE r.months_since <= 12
+ORDER BY r.cohort_month, r.months_since;
+
+-- Materialized CTE hint (PostgreSQL 12+)
+-- Forces the CTE to be computed once and stored as temp table
+WITH expensive_calculation AS MATERIALIZED (
+    SELECT
+        product_id,
+        COUNT(*) AS purchase_count,
+        AVG(amount) AS avg_purchase,
+        percentile_cont(0.95) WITHIN GROUP (ORDER BY amount) AS p95_amount
+    FROM orders
+    WHERE order_date >= CURRENT_DATE - INTERVAL '90 days'
+    GROUP BY product_id
+)
+SELECT
+    p.name,
+    p.category,
+    ec.purchase_count,
+    ec.avg_purchase,
+    ec.p95_amount
+FROM expensive_calculation ec
+JOIN products p ON p.id = ec.product_id
+WHERE ec.purchase_count > 10
+ORDER BY ec.purchase_count DESC;
+
+-- NOT MATERIALIZED hint: allow optimizer to inline the CTE
+WITH simple_filter AS NOT MATERIALIZED (
+    SELECT * FROM users WHERE is_active = true
+)
+SELECT * FROM simple_filter WHERE email LIKE '%@company.com';`,
+};
+
+## Overview
+
+Complex queries decomposed into readable, named steps using CTEs. Each CTE builds on the previous one, making multi-step business logic transparent. Materialization hints control whether the optimizer computes CTEs once or inlines them.
+
+## Code
+
+```sql
+WITH
+step1 AS (SELECT ...),
+step2 AS (SELECT ... FROM step1),
+step3 AS (SELECT ... FROM step2)
+SELECT * FROM step3;
+```
+
+## Notes
+
+- CTEs improve readability by naming each logical step (self-documenting SQL)
+- `AS MATERIALIZED` forces computation once (good for expensive calculations referenced multiple times)
+- `AS NOT MATERIALIZED` allows inlining (good for simple filters the optimizer should push down)
+- Before PostgreSQL 12, all CTEs were optimization fences (always materialized)
+- CTEs are not indexed; for large intermediate results, consider temp tables with indexes
+- Layered CTEs enable unit testing of each step independently during development

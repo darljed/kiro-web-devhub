@@ -1,0 +1,163 @@
+---
+title: "Service Health Check Script"
+description: "A comprehensive health checking script that monitors HTTP endpoints, TCP ports, disk space, and service dependencies with alerting."
+category: "Bash"
+language: "bash"
+tags: ["bash", "monitoring", "health-check", "automation", "production-ready"]
+createdAt: "2025-02-05"
+updatedAt: "2025-02-25"
+---
+
+export const codeBlocks = {
+  main: `#!/usr/bin/env bash
+set -euo pipefail
+
+# Configuration
+ALERT_WEBHOOK=\${ALERT_WEBHOOK:-""}
+LOG_FILE="/var/log/health-check.log"
+CHECK_INTERVAL=30
+MAX_RETRIES=3
+
+# Color codes for terminal output
+RED='\\033[0;31m'
+GREEN='\\033[0;32m'
+YELLOW='\\033[1;33m'
+NC='\\033[0m'
+
+log() {
+    local level="$1" msg="$2"
+    echo "[$(date -u +"%Y-%m-%dT%H:%M:%SZ")] [$level] $msg" | tee -a "$LOG_FILE"
+}
+
+check_http() {
+    local name="$1" url="$2" expected_status="\${3:-200}" timeout="\${4:-10}"
+    local status response_time
+
+    response_time=$( { time curl -sS -o /dev/null -w "%{http_code}" \
+        --connect-timeout "$timeout" --max-time "$timeout" "$url" 2>/dev/null; } 2>&1 )
+    status=$(curl -sS -o /dev/null -w "%{http_code}" \
+        --connect-timeout "$timeout" --max-time "$timeout" "$url" 2>/dev/null || echo "000")
+
+    if [[ "$status" == "$expected_status" ]]; then
+        echo -e "\${GREEN}[OK]\${NC} $name (HTTP $status)"
+        return 0
+    else
+        echo -e "\${RED}[FAIL]\${NC} $name (HTTP $status, expected $expected_status)"
+        return 1
+    fi
+}
+
+check_tcp() {
+    local name="$1" host="$2" port="$3" timeout="\${4:-5}"
+
+    if timeout "$timeout" bash -c "echo >/dev/tcp/$host/$port" 2>/dev/null; then
+        echo -e "\${GREEN}[OK]\${NC} $name ($host:$port reachable)"
+        return 0
+    else
+        echo -e "\${RED}[FAIL]\${NC} $name ($host:$port unreachable)"
+        return 1
+    fi
+}
+
+check_disk() {
+    local mount="$1" threshold="\${2:-90}"
+    local usage
+
+    usage=$(df "$mount" | awk 'NR==2 {print int($5)}')
+    if (( usage < threshold )); then
+        echo -e "\${GREEN}[OK]\${NC} Disk $mount at \${usage}%"
+        return 0
+    else
+        echo -e "\${YELLOW}[WARN]\${NC} Disk $mount at \${usage}% (threshold: $threshold%)"
+        return 1
+    fi
+}
+
+check_process() {
+    local name="$1" pattern="$2"
+
+    if pgrep -f "$pattern" > /dev/null 2>&1; then
+        echo -e "\${GREEN}[OK]\${NC} Process $name is running"
+        return 0
+    else
+        echo -e "\${RED}[FAIL]\${NC} Process $name is NOT running"
+        return 1
+    fi
+}
+
+send_alert() {
+    local message="$1" severity="\${2:-warning}"
+
+    if [[ -n "$ALERT_WEBHOOK" ]]; then
+        curl -sS -X POST "$ALERT_WEBHOOK" \
+            -H "Content-Type: application/json" \
+            -d "{\"severity\":\"$severity\",\"message\":\"$message\",\"host\":\"$(hostname)\",\"timestamp\":\"$(date -u +%Y-%m-%dT%H:%M:%SZ)\"}" \
+            > /dev/null 2>&1 || true
+    fi
+    log "$severity" "$message"
+}
+
+# Run all checks with retry logic
+run_checks() {
+    local failures=0
+
+    echo "=== Health Check: $(date -u +"%Y-%m-%d %H:%M:%S UTC") ==="
+    echo ""
+
+    # HTTP endpoints
+    check_http "API Gateway" "http://localhost:8080/health" || ((failures++))
+    check_http "Auth Service" "http://localhost:3001/healthz" || ((failures++))
+    check_http "Frontend" "http://localhost:3000" || ((failures++))
+
+    echo ""
+
+    # TCP connectivity
+    check_tcp "PostgreSQL" "localhost" 5432 || ((failures++))
+    check_tcp "Redis" "localhost" 6379 || ((failures++))
+    check_tcp "RabbitMQ" "localhost" 5672 || ((failures++))
+
+    echo ""
+
+    # System resources
+    check_disk "/" 85 || ((failures++))
+    check_disk "/var/log" 80 || ((failures++))
+
+    echo ""
+
+    # Critical processes
+    check_process "nginx" "nginx: master" || ((failures++))
+    check_process "node" "node.*server" || ((failures++))
+
+    echo ""
+    echo "=== Result: $failures failure(s) ==="
+
+    if (( failures > 0 )); then
+        send_alert "Health check: $failures checks failed on $(hostname)" "critical"
+        return 1
+    fi
+    return 0
+}
+
+run_checks`,
+};
+
+## Overview
+
+A comprehensive health check script that validates HTTP endpoints, TCP port availability, disk usage, and running processes. Failures trigger webhook alerts and are logged for historical analysis.
+
+## Code
+
+```bash
+check_http "API" "http://localhost:8080/health" 200
+check_tcp "Database" "localhost" 5432
+check_disk "/" 90
+check_process "nginx" "nginx: master"
+```
+
+## Notes
+
+- `curl -w "%{http_code}"` extracts just the status code without body output
+- `/dev/tcp` is a bash built-in for TCP connectivity testing (no netcat needed)
+- `df` with awk extracts disk usage percentage for threshold comparison
+- Webhook alerts use fire-and-forget (|| true) to prevent alert failures from failing the script
+- Run via cron every 30-60 seconds or as a systemd timer for continuous monitoring

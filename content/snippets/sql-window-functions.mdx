@@ -1,0 +1,119 @@
+---
+title: "Window Functions Patterns"
+description: "Advanced SQL window functions for running totals, rankings, lag/lead analysis, and moving averages without self-joins."
+category: "SQL"
+language: "sql"
+tags: ["sql", "window-functions", "analytics", "performance", "production-ready"]
+createdAt: "2025-02-10"
+updatedAt: "2025-03-01"
+---
+
+export const codeBlocks = {
+  main: `-- Running total with partitioning
+SELECT
+    order_date,
+    customer_id,
+    amount,
+    SUM(amount) OVER (
+        PARTITION BY customer_id
+        ORDER BY order_date
+        ROWS BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
+    ) AS running_total,
+    COUNT(*) OVER (
+        PARTITION BY customer_id
+        ORDER BY order_date
+    ) AS order_number
+FROM orders
+WHERE order_date >= '2025-01-01';
+
+-- Rank customers by revenue with dense ranking
+SELECT
+    customer_id,
+    customer_name,
+    total_revenue,
+    DENSE_RANK() OVER (ORDER BY total_revenue DESC) AS revenue_rank,
+    NTILE(4) OVER (ORDER BY total_revenue DESC) AS quartile,
+    total_revenue - LAG(total_revenue) OVER (ORDER BY total_revenue DESC) AS gap_to_next
+FROM (
+    SELECT
+        c.id AS customer_id,
+        c.name AS customer_name,
+        SUM(o.amount) AS total_revenue
+    FROM customers c
+    JOIN orders o ON o.customer_id = c.id
+    WHERE o.order_date >= DATE_TRUNC('year', CURRENT_DATE)
+    GROUP BY c.id, c.name
+) ranked;
+
+-- Month-over-month growth with LAG
+SELECT
+    month,
+    revenue,
+    LAG(revenue) OVER (ORDER BY month) AS prev_month_revenue,
+    ROUND(
+        (revenue - LAG(revenue) OVER (ORDER BY month)) * 100.0 /
+        NULLIF(LAG(revenue) OVER (ORDER BY month), 0),
+        1
+    ) AS growth_pct
+FROM (
+    SELECT
+        DATE_TRUNC('month', order_date) AS month,
+        SUM(amount) AS revenue
+    FROM orders
+    GROUP BY DATE_TRUNC('month', order_date)
+) monthly;
+
+-- Moving average (7-day) for smoothing
+SELECT
+    event_date,
+    daily_count,
+    ROUND(AVG(daily_count) OVER (
+        ORDER BY event_date
+        ROWS BETWEEN 6 PRECEDING AND CURRENT ROW
+    ), 1) AS moving_avg_7d,
+    ROUND(AVG(daily_count) OVER (
+        ORDER BY event_date
+        ROWS BETWEEN 29 PRECEDING AND CURRENT ROW
+    ), 1) AS moving_avg_30d
+FROM (
+    SELECT event_date, COUNT(*) AS daily_count
+    FROM events
+    GROUP BY event_date
+) daily;
+
+-- First and last value per group
+SELECT DISTINCT
+    department,
+    FIRST_VALUE(employee_name) OVER (
+        PARTITION BY department
+        ORDER BY salary DESC
+        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+    ) AS highest_paid,
+    LAST_VALUE(employee_name) OVER (
+        PARTITION BY department
+        ORDER BY salary DESC
+        ROWS BETWEEN UNBOUNDED PRECEDING AND UNBOUNDED FOLLOWING
+    ) AS lowest_paid,
+    AVG(salary) OVER (PARTITION BY department) AS dept_avg_salary
+FROM employees;`,
+};
+
+## Overview
+
+Window functions enable complex analytics (running totals, rankings, period comparisons) in a single query pass without self-joins or subqueries. They operate on a "window" of rows relative to the current row.
+
+## Code
+
+```sql
+SUM(amount) OVER (PARTITION BY customer_id ORDER BY date) AS running_total
+LAG(revenue) OVER (ORDER BY month) AS prev_month
+DENSE_RANK() OVER (ORDER BY score DESC) AS rank
+```
+
+## Notes
+
+- `PARTITION BY` creates independent windows per group (like GROUP BY for window functions)
+- `ROWS BETWEEN` defines the frame explicitly (UNBOUNDED, N PRECEDING, CURRENT ROW, N FOLLOWING)
+- `LAG(col, n)` and `LEAD(col, n)` access rows before/after without self-join
+- `NTILE(4)` divides results into equal quartiles for distribution analysis
+- Window functions execute after WHERE, GROUP BY, and HAVING but before ORDER BY and LIMIT

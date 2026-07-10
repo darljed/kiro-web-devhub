@@ -1,0 +1,88 @@
+---
+title: "Anomaly Detection Queries"
+description: "SPL patterns for detecting anomalous behavior including sudden traffic spikes, unusual error patterns, and baseline deviation alerts."
+category: "Splunk"
+language: "spl"
+tags: ["splunk", "anomaly-detection", "alerting", "statistics", "production-ready"]
+createdAt: "2025-02-05"
+updatedAt: "2025-02-25"
+---
+
+export const codeBlocks = {
+  main: `| Standard deviation based anomaly detection
+index=application sourcetype=access_combined earliest=-7d
+| timechart span=5m count as request_count
+| eventstats avg(request_count) as baseline_avg, stdev(request_count) as baseline_stdev
+| eval upper_bound=baseline_avg + (3 * baseline_stdev)
+| eval lower_bound=baseline_avg - (3 * baseline_stdev)
+| eval is_anomaly=if(request_count > upper_bound OR request_count < lower_bound, 1, 0)
+| where is_anomaly=1
+| eval deviation_sigma=round(abs(request_count - baseline_avg) / baseline_stdev, 1)
+| table _time, request_count, baseline_avg, upper_bound, lower_bound, deviation_sigma
+
+| Sudden error rate spike detection
+index=application sourcetype=access_combined
+| timechart span=1m count as total, sum(eval(if(status>=500, 1, 0))) as errors
+| eval error_rate=if(total>0, (errors/total)*100, 0)
+| streamstats window=60 avg(error_rate) as rolling_avg_error_rate
+| eval spike_threshold=rolling_avg_error_rate * 3
+| eval is_spike=if(error_rate > spike_threshold AND error_rate > 5, 1, 0)
+| where is_spike=1
+| eval severity=case(
+    error_rate > 50, "critical",
+    error_rate > 20, "high",
+    error_rate > 10, "medium",
+    1=1, "low"
+)
+
+| Unusual source IP behavior (potential attack detection)
+index=application sourcetype=access_combined
+| stats
+    count as requests,
+    dc(uri_path) as unique_paths,
+    dc(status) as unique_statuses,
+    values(status) as status_codes,
+    earliest(_time) as first_seen,
+    latest(_time) as last_seen
+    by clientip
+| eval request_rate=requests / (last_seen - first_seen + 1)
+| eval path_ratio=unique_paths / requests
+| where requests > 100 AND (request_rate > 10 OR path_ratio > 0.8 OR unique_paths > 50)
+| eval suspicious_reason=case(
+    request_rate > 50, "Very high request rate",
+    path_ratio > 0.8, "Path scanning behavior",
+    unique_paths > 50, "Excessive path enumeration",
+    1=1, "Elevated activity"
+)
+| sort - requests
+
+| Day-over-day comparison for detecting drift
+index=application sourcetype=access_combined earliest=-1d@d latest=@d
+| timechart span=1h count as today_count
+| appendcols [
+    search index=application sourcetype=access_combined earliest=-2d@d latest=-1d@d
+    | timechart span=1h count as yesterday_count
+]
+| eval change_pct=round(((today_count - yesterday_count) / yesterday_count) * 100, 1)
+| where abs(change_pct) > 50`,
+};
+
+## Overview
+
+Statistical anomaly detection queries that identify unusual patterns in application traffic, error rates, and user behavior. These queries establish baselines and alert when metrics deviate significantly, enabling proactive incident response.
+
+## Code
+
+```spl
+| timechart span=5m count as requests
+| eventstats avg(requests) as baseline, stdev(requests) as sigma
+| eval is_anomaly=if(requests > baseline + 3*sigma, 1, 0)
+```
+
+## Notes
+
+- Three-sigma rule: values beyond 3 standard deviations occur with only 0.3% probability normally
+- Rolling window (`streamstats window=60`) adapts the baseline to recent trends
+- Combine request rate with path diversity for bot/scanner detection
+- Day-over-day comparison catches gradual degradation that absolute thresholds miss
+- Set minimum thresholds (e.g., `error_rate > 5`) to avoid alerting on low-traffic noise

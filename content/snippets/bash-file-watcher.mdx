@@ -1,0 +1,121 @@
+---
+title: "File Watcher with Debounce"
+description: "A portable file watcher that detects changes and triggers commands with debouncing to prevent rapid-fire execution."
+category: "Bash"
+language: "bash"
+tags: ["bash", "file-watcher", "automation", "development", "production-ready"]
+createdAt: "2025-03-20"
+updatedAt: "2025-04-05"
+---
+
+export const codeBlocks = {
+  main: `#!/usr/bin/env bash
+set -euo pipefail
+
+WATCH_DIR="\${1:-.}"
+COMMAND="\${2:-echo 'Files changed'}"
+PATTERN="\${PATTERN:-*}"
+DEBOUNCE_MS="\${DEBOUNCE_MS:-500}"
+EXCLUDE="\${EXCLUDE:-.git|node_modules|__pycache__|.next}"
+
+log() { echo "[$(date +%H:%M:%S)] $*"; }
+
+# Use inotifywait if available (Linux), fall back to polling
+if command -v inotifywait &>/dev/null; then
+    watch_inotify() {
+        log "Watching $WATCH_DIR (inotify, debounce: \${DEBOUNCE_MS}ms)"
+        log "Pattern: $PATTERN | Exclude: $EXCLUDE"
+        log "Command: $COMMAND"
+        echo "---"
+
+        local last_trigger=0
+
+        inotifywait -mrq \
+            --exclude "$EXCLUDE" \
+            -e modify,create,delete,move \
+            --format '%w%f %e %T' \
+            --timefmt '%s' \
+            "$WATCH_DIR" | while read -r file event timestamp; do
+
+            # Filter by pattern
+            case "$file" in
+                $PATTERN) ;;
+                *) continue ;;
+            esac
+
+            local now=$(date +%s%N)
+            local diff=$(( (now - last_trigger) / 1000000 ))
+
+            if (( diff >= DEBOUNCE_MS )); then
+                last_trigger=$now
+                log "Changed: $file ($event)"
+                eval "$COMMAND" || log "Command failed (exit $?)"
+            fi
+        done
+    }
+    watch_inotify
+elif command -v fswatch &>/dev/null; then
+    # macOS with fswatch
+    watch_fswatch() {
+        log "Watching $WATCH_DIR (fswatch, debounce: \${DEBOUNCE_MS}ms)"
+        log "Command: $COMMAND"
+        echo "---"
+
+        fswatch -r \
+            --latency "$(echo "scale=1; $DEBOUNCE_MS/1000" | bc)" \
+            --exclude "$EXCLUDE" \
+            "$WATCH_DIR" | while read -r file; do
+            log "Changed: $file"
+            eval "$COMMAND" || log "Command failed (exit $?)"
+        done
+    }
+    watch_fswatch
+else
+    # Fallback: polling with checksums
+    watch_poll() {
+        local interval="\${POLL_INTERVAL:-2}"
+        log "Watching $WATCH_DIR (polling every \${interval}s)"
+        log "Command: $COMMAND"
+        echo "---"
+
+        local prev_hash=""
+        while true; do
+            local curr_hash
+            curr_hash=$(find "$WATCH_DIR" -type f -name "$PATTERN" \
+                -not -path "*/.git/*" \
+                -not -path "*/node_modules/*" \
+                -newer "$WATCH_DIR" -print0 2>/dev/null | md5sum)
+
+            if [[ "$curr_hash" != "$prev_hash" && -n "$prev_hash" ]]; then
+                log "Changes detected"
+                eval "$COMMAND" || log "Command failed (exit $?)"
+            fi
+            prev_hash="$curr_hash"
+            sleep "$interval"
+        done
+    }
+    watch_poll
+fi`,
+};
+
+## Overview
+
+A cross-platform file watcher that detects filesystem changes and runs a command with debouncing to prevent rapid-fire execution. Uses `inotifywait` on Linux, `fswatch` on macOS, with a polling fallback for other systems.
+
+## Code
+
+```bash
+# Watch src/ and run tests on change
+./watch.sh ./src "npm test"
+
+# Custom pattern and debounce
+PATTERN="*.py" DEBOUNCE_MS=1000 ./watch.sh . "pytest"
+```
+
+## Notes
+
+- `inotifywait` is the most efficient on Linux (kernel-level notification, zero CPU when idle)
+- `fswatch` is the macOS equivalent using FSEvents
+- The polling fallback works everywhere but uses more CPU and has higher latency
+- Debouncing prevents the command from running multiple times for batch saves (IDE save-all)
+- Exclude patterns prevent triggering on build artifacts, VCS metadata, and dependency directories

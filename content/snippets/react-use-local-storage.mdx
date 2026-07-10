@@ -1,0 +1,120 @@
+---
+title: "useLocalStorage Hook"
+description: "A type-safe React hook that syncs state with localStorage, handles serialization, and supports cross-tab synchronization via storage events."
+category: "React"
+language: "typescript"
+tags: ["react", "hooks", "localStorage", "persistence", "production-ready"]
+createdAt: "2025-01-10"
+updatedAt: "2025-02-01"
+---
+
+export const codeBlocks = {
+  main: `import { useState, useEffect, useCallback, useSyncExternalStore } from "react";
+
+type Serializer<T> = {
+  serialize: (value: T) => string;
+  deserialize: (value: string) => T;
+};
+
+const defaultSerializer: Serializer<unknown> = {
+  serialize: JSON.stringify,
+  deserialize: JSON.parse,
+};
+
+export function useLocalStorage<T>(
+  key: string,
+  initialValue: T,
+  options?: { serializer?: Serializer<T> }
+): [T, (value: T | ((prev: T) => T)) => void, () => void] {
+  const serializer = options?.serializer ?? (defaultSerializer as Serializer<T>);
+
+  const getStoredValue = useCallback((): T => {
+    if (typeof window === "undefined") return initialValue;
+    try {
+      const item = localStorage.getItem(key);
+      return item !== null ? serializer.deserialize(item) : initialValue;
+    } catch {
+      return initialValue;
+    }
+  }, [key, initialValue, serializer]);
+
+  const getSnapshot = useCallback(() => {
+    return localStorage.getItem(key);
+  }, [key]);
+
+  const getServerSnapshot = useCallback(() => {
+    return null;
+  }, []);
+
+  const subscribe = useCallback(
+    (callback: () => void) => {
+      const handleStorage = (e: StorageEvent) => {
+        if (e.key === key) callback();
+      };
+      window.addEventListener("storage", handleStorage);
+      window.addEventListener(\`local-storage-\${key}\`, callback);
+      return () => {
+        window.removeEventListener("storage", handleStorage);
+        window.removeEventListener(\`local-storage-\${key}\`, callback);
+      };
+    },
+    [key]
+  );
+
+  const rawValue = useSyncExternalStore(subscribe, getSnapshot, getServerSnapshot);
+  const value = rawValue !== null ? serializer.deserialize(rawValue) : initialValue;
+
+  const setValue = useCallback(
+    (newValue: T | ((prev: T) => T)) => {
+      const resolvedValue =
+        newValue instanceof Function ? newValue(getStoredValue()) : newValue;
+      localStorage.setItem(key, serializer.serialize(resolvedValue));
+      window.dispatchEvent(new Event(\`local-storage-\${key}\`));
+    },
+    [key, serializer, getStoredValue]
+  );
+
+  const removeValue = useCallback(() => {
+    localStorage.removeItem(key);
+    window.dispatchEvent(new Event(\`local-storage-\${key}\`));
+  }, [key]);
+
+  return [value, setValue, removeValue];
+}`,
+  usage: `function SettingsPanel() {
+  const [theme, setTheme] = useLocalStorage("theme", "system");
+  const [user, setUser, clearUser] = useLocalStorage("user", null);
+
+  return (
+    <div>
+      <select value={theme} onChange={(e) => setTheme(e.target.value)}>
+        <option value="light">Light</option>
+        <option value="dark">Dark</option>
+        <option value="system">System</option>
+      </select>
+      <button onClick={clearUser}>Logout</button>
+    </div>
+  );
+}`,
+};
+
+## Overview
+
+A React hook that provides a `useState`-like API backed by localStorage. It handles SSR safety, JSON serialization, cross-tab synchronization via the storage event, and same-tab updates via custom events, using `useSyncExternalStore` for tear-free reads.
+
+## Code
+
+```typescript
+const [value, setValue, removeValue] = useLocalStorage("key", defaultValue);
+setValue("new value");      // persists to localStorage
+setValue(prev => prev + 1); // updater function
+removeValue();              // removes from localStorage
+```
+
+## Notes
+
+- Uses `useSyncExternalStore` for concurrent-mode safe external state synchronization
+- Cross-tab sync works via the native `storage` event (fires in other tabs)
+- Same-tab sync uses custom events since `storage` only fires in other tabs
+- SSR safe with `getServerSnapshot` returning null during server rendering
+- Custom serializers support complex types (Date, Map, Set) beyond JSON

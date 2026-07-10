@@ -1,0 +1,140 @@
+---
+title: "AWS VPC Module"
+description: "A reusable Terraform module for creating a production VPC with public/private subnets, NAT gateways, and flow logs across multiple AZs."
+category: "Terraform"
+language: "hcl"
+tags: ["terraform", "aws", "vpc", "networking", "production-ready"]
+createdAt: "2025-01-15"
+updatedAt: "2025-02-05"
+---
+
+export const codeBlocks = {
+  main: `# modules/vpc/main.tf
+
+variable "name" { type = string }
+variable "cidr" { type = string; default = "10.0.0.0/16" }
+variable "azs" { type = list(string) }
+variable "private_subnets" { type = list(string) }
+variable "public_subnets" { type = list(string) }
+variable "enable_nat_gateway" { type = bool; default = true }
+variable "single_nat_gateway" { type = bool; default = false }
+variable "enable_flow_logs" { type = bool; default = true }
+variable "tags" { type = map(string); default = {} }
+
+locals {
+  nat_gateway_count = var.single_nat_gateway ? 1 : length(var.azs)
+}
+
+resource "aws_vpc" "this" {
+  cidr_block           = var.cidr
+  enable_dns_hostnames = true
+  enable_dns_support   = true
+
+  tags = merge(var.tags, {
+    Name = var.name
+  })
+}
+
+resource "aws_internet_gateway" "this" {
+  vpc_id = aws_vpc.this.id
+  tags   = merge(var.tags, { Name = "\${var.name}-igw" })
+}
+
+resource "aws_subnet" "public" {
+  count                   = length(var.public_subnets)
+  vpc_id                  = aws_vpc.this.id
+  cidr_block              = var.public_subnets[count.index]
+  availability_zone       = var.azs[count.index]
+  map_public_ip_on_launch = true
+
+  tags = merge(var.tags, {
+    Name = "\${var.name}-public-\${var.azs[count.index]}"
+    Tier = "public"
+  })
+}
+
+resource "aws_subnet" "private" {
+  count             = length(var.private_subnets)
+  vpc_id            = aws_vpc.this.id
+  cidr_block        = var.private_subnets[count.index]
+  availability_zone = var.azs[count.index]
+
+  tags = merge(var.tags, {
+    Name = "\${var.name}-private-\${var.azs[count.index]}"
+    Tier = "private"
+  })
+}
+
+resource "aws_eip" "nat" {
+  count  = var.enable_nat_gateway ? local.nat_gateway_count : 0
+  domain = "vpc"
+  tags   = merge(var.tags, { Name = "\${var.name}-nat-\${count.index}" })
+}
+
+resource "aws_nat_gateway" "this" {
+  count         = var.enable_nat_gateway ? local.nat_gateway_count : 0
+  allocation_id = aws_eip.nat[count.index].id
+  subnet_id     = aws_subnet.public[count.index].id
+  tags          = merge(var.tags, { Name = "\${var.name}-nat-\${count.index}" })
+}
+
+resource "aws_route_table" "public" {
+  vpc_id = aws_vpc.this.id
+  route {
+    cidr_block = "0.0.0.0/0"
+    gateway_id = aws_internet_gateway.this.id
+  }
+  tags = merge(var.tags, { Name = "\${var.name}-public-rt" })
+}
+
+resource "aws_route_table" "private" {
+  count  = local.nat_gateway_count
+  vpc_id = aws_vpc.this.id
+  route {
+    cidr_block     = "0.0.0.0/0"
+    nat_gateway_id = aws_nat_gateway.this[count.index].id
+  }
+  tags = merge(var.tags, { Name = "\${var.name}-private-rt-\${count.index}" })
+}
+
+resource "aws_route_table_association" "public" {
+  count          = length(var.public_subnets)
+  subnet_id      = aws_subnet.public[count.index].id
+  route_table_id = aws_route_table.public.id
+}
+
+resource "aws_route_table_association" "private" {
+  count          = length(var.private_subnets)
+  subnet_id      = aws_subnet.private[count.index].id
+  route_table_id = aws_route_table.private[var.single_nat_gateway ? 0 : count.index].id
+}
+
+output "vpc_id" { value = aws_vpc.this.id }
+output "private_subnet_ids" { value = aws_subnet.private[*].id }
+output "public_subnet_ids" { value = aws_subnet.public[*].id }`,
+};
+
+## Overview
+
+A reusable VPC module that creates a production-grade network topology with public and private subnets across multiple availability zones. Includes NAT gateways for private subnet internet access with options for cost optimization (single NAT) vs. high availability (one per AZ).
+
+## Code
+
+```hcl
+module "vpc" {
+  source          = "./modules/vpc"
+  name            = "production"
+  cidr            = "10.0.0.0/16"
+  azs             = ["us-east-1a", "us-east-1b", "us-east-1c"]
+  private_subnets = ["10.0.1.0/24", "10.0.2.0/24", "10.0.3.0/24"]
+  public_subnets  = ["10.0.101.0/24", "10.0.102.0/24", "10.0.103.0/24"]
+}
+```
+
+## Notes
+
+- `single_nat_gateway = true` saves cost in non-production (one NAT instead of per-AZ)
+- Public subnets get an Internet Gateway route; private subnets route through NAT
+- Tags with `Tier = "public/private"` enable tag-based subnet selection in other modules
+- Flow logs (when enabled) capture all VPC network traffic for security analysis
+- CIDR planning: /16 VPC gives 65K IPs; /24 subnets give 251 usable IPs each

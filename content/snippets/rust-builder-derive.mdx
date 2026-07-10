@@ -1,0 +1,183 @@
+---
+title: "Type-State Builder Pattern"
+description: "A compile-time enforced builder using Rust's type system to guarantee required fields are set before building, with no runtime overhead."
+category: "Rust"
+language: "rust"
+tags: ["rust", "design-patterns", "builder", "type-state", "production-ready"]
+createdAt: "2025-04-15"
+updatedAt: "2025-04-30"
+---
+
+export const codeBlocks = {
+  main: `use std::marker::PhantomData;
+use std::net::SocketAddr;
+use std::time::Duration;
+
+/// Marker traits for type-state pattern
+pub trait ToAssign {}
+pub trait Assigned {}
+
+pub struct Yes;
+pub struct No;
+impl ToAssign for No {}
+impl Assigned for Yes {}
+
+/// Server configuration - requires host and port to be set
+pub struct ServerConfig {
+    pub host: String,
+    pub port: u16,
+    pub max_connections: usize,
+    pub timeout: Duration,
+    pub tls_cert: Option<String>,
+    pub workers: usize,
+}
+
+/// Builder with compile-time tracking of required fields
+pub struct ServerConfigBuilder<HostSet: ToAssign + ?Sized, PortSet: ToAssign + ?Sized> {
+    host: Option<String>,
+    port: Option<u16>,
+    max_connections: usize,
+    timeout: Duration,
+    tls_cert: Option<String>,
+    workers: usize,
+    _host_marker: PhantomData<HostSet>,
+    _port_marker: PhantomData<PortSet>,
+}
+
+impl ServerConfigBuilder<No, No> {
+    pub fn new() -> Self {
+        Self {
+            host: None,
+            port: None,
+            max_connections: 1024,
+            timeout: Duration::from_secs(30),
+            tls_cert: None,
+            workers: num_cpus::get(),
+            _host_marker: PhantomData,
+            _port_marker: PhantomData,
+        }
+    }
+}
+
+impl<P: ToAssign> ServerConfigBuilder<No, P> {
+    /// Set the host (required)
+    pub fn host(self, host: impl Into<String>) -> ServerConfigBuilder<Yes, P> {
+        ServerConfigBuilder {
+            host: Some(host.into()),
+            port: self.port,
+            max_connections: self.max_connections,
+            timeout: self.timeout,
+            tls_cert: self.tls_cert,
+            workers: self.workers,
+            _host_marker: PhantomData,
+            _port_marker: PhantomData,
+        }
+    }
+}
+
+impl<H: ToAssign> ServerConfigBuilder<H, No> {
+    /// Set the port (required)
+    pub fn port(self, port: u16) -> ServerConfigBuilder<H, Yes> {
+        ServerConfigBuilder {
+            host: self.host,
+            port: Some(port),
+            max_connections: self.max_connections,
+            timeout: self.timeout,
+            tls_cert: self.tls_cert,
+            workers: self.workers,
+            _host_marker: PhantomData,
+            _port_marker: PhantomData,
+        }
+    }
+}
+
+impl<H: ToAssign, P: ToAssign> ServerConfigBuilder<H, P> {
+    /// Set max connections (optional, default: 1024)
+    pub fn max_connections(mut self, max: usize) -> Self {
+        self.max_connections = max;
+        self
+    }
+
+    /// Set request timeout (optional, default: 30s)
+    pub fn timeout(mut self, timeout: Duration) -> Self {
+        self.timeout = timeout;
+        self
+    }
+
+    /// Set TLS certificate path (optional)
+    pub fn tls_cert(mut self, path: impl Into<String>) -> Self {
+        self.tls_cert = Some(path.into());
+        self
+    }
+
+    /// Set worker thread count (optional, default: CPU count)
+    pub fn workers(mut self, count: usize) -> Self {
+        self.workers = count;
+        self
+    }
+}
+
+// build() is ONLY available when both host and port are set
+impl ServerConfigBuilder<Yes, Yes> {
+    pub fn build(self) -> ServerConfig {
+        ServerConfig {
+            host: self.host.unwrap(),
+            port: self.port.unwrap(),
+            max_connections: self.max_connections,
+            timeout: self.timeout,
+            tls_cert: self.tls_cert,
+            workers: self.workers,
+        }
+    }
+}
+
+impl ServerConfig {
+    pub fn builder() -> ServerConfigBuilder<No, No> {
+        ServerConfigBuilder::new()
+    }
+
+    pub fn address(&self) -> String {
+        format!("{}:{}", self.host, self.port)
+    }
+}`,
+  usage: `// This compiles - both required fields set
+let config = ServerConfig::builder()
+    .host("0.0.0.0")
+    .port(8080)
+    .max_connections(2048)
+    .timeout(Duration::from_secs(60))
+    .tls_cert("/etc/ssl/cert.pem")
+    .build();
+
+// This does NOT compile - missing port
+// let bad = ServerConfig::builder()
+//     .host("localhost")
+//     .build(); // Error: method 'build' not found for ServerConfigBuilder<Yes, No>
+
+// Order of required fields doesn't matter
+let config2 = ServerConfig::builder()
+    .port(3000)
+    .host("localhost")
+    .build();`,
+};
+
+## Overview
+
+A zero-cost builder pattern that uses phantom types to track which required fields have been set. The `build()` method only exists when all required fields are satisfied, catching missing fields at compile time with no runtime overhead.
+
+## Code
+
+```rust
+let config = ServerConfig::builder()
+    .host("localhost")  // Transitions No -> Yes for host
+    .port(8080)         // Transitions No -> Yes for port
+    .build();           // Only available on Builder<Yes, Yes>
+```
+
+## Notes
+
+- `PhantomData` markers have zero runtime size; the type-state is purely compile-time
+- `build()` is implemented only for `ServerConfigBuilder<Yes, Yes>`, making incomplete builds a compile error
+- Optional fields use `mut self` methods that do not change the type state
+- The error messages are clear: "method `build` not found for type `ServerConfigBuilder<No, Yes>`"
+- This pattern is more verbose to write but provides stronger guarantees than runtime validation

@@ -1,0 +1,94 @@
+---
+title: "Multi-Stage Docker Build"
+description: "Production Dockerfile with multi-stage builds for minimal image size, security hardening, non-root users, and health checks."
+category: "Docker"
+language: "yaml"
+tags: ["docker", "multi-stage", "optimization", "security", "production-ready"]
+createdAt: "2025-02-10"
+updatedAt: "2025-03-01"
+---
+
+export const codeBlocks = {
+  main: `# Stage 1: Dependencies
+FROM node:20-alpine AS deps
+WORKDIR /app
+COPY package.json package-lock.json ./
+RUN npm ci --only=production && \
+    cp -R node_modules /prod_modules && \
+    npm ci
+
+# Stage 2: Build
+FROM node:20-alpine AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+ARG BUILD_DATE
+ARG GIT_SHA
+ARG VERSION
+ENV NEXT_TELEMETRY_DISABLED=1
+RUN npm run build
+
+# Stage 3: Production
+FROM node:20-alpine AS runner
+WORKDIR /app
+
+# Security hardening
+RUN addgroup --system --gid 1001 appgroup && \
+    adduser --system --uid 1001 appuser && \
+    apk add --no-cache dumb-init && \
+    rm -rf /var/cache/apk/*
+
+# Copy only production artifacts
+COPY --from=deps /prod_modules ./node_modules
+COPY --from=builder /app/.next/standalone ./
+COPY --from=builder /app/.next/static ./.next/static
+COPY --from=builder /app/public ./public
+
+# OCI labels
+LABEL org.opencontainers.image.created=\${BUILD_DATE}
+LABEL org.opencontainers.image.revision=\${GIT_SHA}
+LABEL org.opencontainers.image.version=\${VERSION}
+
+# Non-root user
+USER appuser:appgroup
+
+# Environment
+ENV NODE_ENV=production
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+EXPOSE 3000
+
+# Health check
+HEALTHCHECK --interval=30s --timeout=10s --start-period=30s --retries=3 \
+    CMD wget --no-verbose --tries=1 --spider http://localhost:3000/api/health || exit 1
+
+# Use dumb-init to handle signals properly
+ENTRYPOINT ["dumb-init", "--"]
+CMD ["node", "server.js"]`,
+};
+
+## Overview
+
+A production-ready multi-stage Dockerfile that separates dependency installation, building, and runtime into isolated stages. The final image contains only production artifacts, reducing size by 80%+ and eliminating build-time security vulnerabilities.
+
+## Code
+
+```dockerfile
+FROM node:20-alpine AS builder
+COPY . .
+RUN npm run build
+
+FROM node:20-alpine AS runner
+COPY --from=builder /app/.next/standalone ./
+CMD ["node", "server.js"]
+```
+
+## Notes
+
+- Stage separation means build dependencies (compilers, dev tools) never reach production
+- `dumb-init` ensures proper PID 1 signal handling (SIGTERM forwarding to child processes)
+- Non-root user (`appuser`) follows the principle of least privilege
+- `HEALTHCHECK` enables container orchestrators to detect unhealthy instances
+- Alpine base (~5MB) significantly reduces image size vs Debian-based images (~300MB)
+- Separate `npm ci --only=production` creates a lean node_modules for the final stage

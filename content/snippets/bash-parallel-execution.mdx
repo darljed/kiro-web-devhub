@@ -1,0 +1,126 @@
+---
+title: "Parallel Task Execution"
+description: "Shell patterns for running multiple tasks in parallel with job control, progress tracking, error collection, and result aggregation."
+category: "Bash"
+language: "bash"
+tags: ["bash", "parallel", "concurrency", "automation", "production-ready"]
+createdAt: "2025-01-20"
+updatedAt: "2025-02-10"
+---
+
+export const codeBlocks = {
+  main: `#!/usr/bin/env bash
+set -euo pipefail
+
+# Parallel execution with bounded concurrency
+MAX_PARALLEL=\${MAX_PARALLEL:-8}
+ERRORS_FILE=$(mktemp)
+RESULTS_DIR=$(mktemp -d)
+trap 'rm -rf "$ERRORS_FILE" "$RESULTS_DIR"' EXIT
+
+# Track running jobs
+declare -a PIDS=()
+TOTAL=0
+COMPLETED=0
+FAILED=0
+
+run_with_limit() {
+    local cmd="$1"
+    local label="$2"
+
+    # Wait for a slot if at capacity
+    while (( \${#PIDS[@]} >= MAX_PARALLEL )); do
+        wait_for_any
+    done
+
+    # Run in background
+    (
+        if eval "$cmd" > "$RESULTS_DIR/$label.out" 2>&1; then
+            echo "OK:$label" >> "$RESULTS_DIR/status"
+        else
+            echo "FAIL:$label" >> "$RESULTS_DIR/status"
+            echo "$label: $(tail -1 "$RESULTS_DIR/$label.out")" >> "$ERRORS_FILE"
+        fi
+    ) &
+    PIDS+=($!)
+    ((TOTAL++))
+}
+
+wait_for_any() {
+    # Wait for any child to finish and remove from tracking
+    local pid
+    for i in "\${!PIDS[@]}"; do
+        pid=\${PIDS[$i]}
+        if ! kill -0 "$pid" 2>/dev/null; then
+            wait "$pid" 2>/dev/null || true
+            unset 'PIDS[$i]'
+            ((COMPLETED++))
+            printf "\\rProgress: %d/%d (running: %d)" "$COMPLETED" "$TOTAL" "\${#PIDS[@]}"
+            return
+        fi
+    done
+    sleep 0.1
+}
+
+wait_for_all() {
+    while (( \${#PIDS[@]} > 0 )); do
+        wait_for_any
+    done
+}
+
+# Example: Deploy to multiple servers in parallel
+deploy_to_server() {
+    local server="$1"
+    local version="$2"
+    ssh -o ConnectTimeout=10 "$server" "
+        cd /app &&
+        docker pull myapp:$version &&
+        docker-compose up -d
+    "
+}
+
+SERVERS=(web-01 web-02 web-03 web-04 api-01 api-02 api-03 api-04)
+VERSION=\${1:-latest}
+
+echo "Deploying v$VERSION to \${#SERVERS[@]} servers (max $MAX_PARALLEL concurrent)..."
+
+for server in "\${SERVERS[@]}"; do
+    run_with_limit "deploy_to_server $server $VERSION" "$server"
+done
+
+wait_for_all
+echo ""
+
+# Report results
+FAILED=$(grep -c "^FAIL:" "$RESULTS_DIR/status" 2>/dev/null || echo 0)
+echo "Deployment complete: $TOTAL total, $((TOTAL - FAILED)) succeeded, $FAILED failed"
+
+if [[ -s "$ERRORS_FILE" ]]; then
+    echo ""
+    echo "Failures:"
+    cat "$ERRORS_FILE"
+    exit 1
+fi`,
+};
+
+## Overview
+
+A robust parallel execution framework for shell scripts that limits concurrency, tracks progress, collects errors, and provides a summary report. Useful for deploying to multiple servers, batch processing files, or running tests in parallel.
+
+## Code
+
+```bash
+MAX_PARALLEL=8
+for item in "${items[@]}"; do
+    run_with_limit "process $item" "$item"
+done
+wait_for_all
+```
+
+## Notes
+
+- `set -euo pipefail` ensures failures are caught (exit on error, undefined vars, pipe failures)
+- The PID array tracks running background jobs; `kill -0` tests if a process is alive
+- Temporary files with `trap` cleanup prevent leftover files on script exit or interrupt
+- `MAX_PARALLEL` can be tuned based on target system load (SSH connections, API rate limits)
+- For simpler parallelism without job limiting, consider `xargs -P` or GNU `parallel`

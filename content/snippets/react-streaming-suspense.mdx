@@ -1,0 +1,168 @@
+---
+title: "Streaming with Nested Suspense"
+description: "Nested Suspense boundaries for progressive page loading that streams critical content first while deferring non-essential sections."
+category: "React"
+language: "typescript"
+tags: ["react", "suspense", "streaming", "performance", "production-ready"]
+createdAt: "2025-03-12"
+updatedAt: "2025-04-01"
+---
+
+export const codeBlocks = {
+  main: `import { Suspense } from "react";
+
+// Skeleton components for loading states
+function HeaderSkeleton() {
+  return (
+    <div className="animate-pulse">
+      <div className="h-8 bg-gray-200 rounded w-1/3 mb-2" />
+      <div className="h-4 bg-gray-200 rounded w-2/3" />
+    </div>
+  );
+}
+
+function CardSkeleton() {
+  return (
+    <div className="animate-pulse border rounded-lg p-4">
+      <div className="h-4 bg-gray-200 rounded w-3/4 mb-3" />
+      <div className="h-3 bg-gray-200 rounded w-1/2 mb-2" />
+      <div className="h-3 bg-gray-200 rounded w-2/3" />
+    </div>
+  );
+}
+
+function TableSkeleton({ rows = 5 }: { rows?: number }) {
+  return (
+    <div className="animate-pulse space-y-2">
+      {Array.from({ length: rows }).map((_, i) => (
+        <div key={i} className="h-10 bg-gray-200 rounded" />
+      ))}
+    </div>
+  );
+}
+
+// Page with progressive streaming
+export default async function AnalyticsDashboard() {
+  return (
+    <main className="max-w-7xl mx-auto p-6 space-y-8">
+      {/* Critical: loads immediately with shell */}
+      <Suspense fallback={<HeaderSkeleton />}>
+        <DashboardHeader />
+      </Suspense>
+
+      {/* High priority: KPI cards stream in quickly */}
+      <section className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <Suspense fallback={<CardSkeleton />}>
+          <KPICard metric="revenue" />
+        </Suspense>
+        <Suspense fallback={<CardSkeleton />}>
+          <KPICard metric="users" />
+        </Suspense>
+        <Suspense fallback={<CardSkeleton />}>
+          <KPICard metric="conversion" />
+        </Suspense>
+        <Suspense fallback={<CardSkeleton />}>
+          <KPICard metric="churn" />
+        </Suspense>
+      </section>
+
+      {/* Medium priority: charts */}
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+        <Suspense fallback={<CardSkeleton />}>
+          <RevenueChart />
+        </Suspense>
+        <Suspense fallback={<CardSkeleton />}>
+          <UserGrowthChart />
+        </Suspense>
+      </div>
+
+      {/* Low priority: detailed table streams last */}
+      <Suspense fallback={<TableSkeleton rows={10} />}>
+        <TransactionsTable />
+      </Suspense>
+    </main>
+  );
+}
+
+// Each async component fetches its own data
+async function DashboardHeader() {
+  const summary = await fetchDashboardSummary();
+  return (
+    <header>
+      <h1 className="text-2xl font-bold">{summary.title}</h1>
+      <p className="text-gray-600">Last updated: {summary.lastUpdated}</p>
+    </header>
+  );
+}
+
+async function KPICard({ metric }: { metric: string }) {
+  const data = await fetchMetric(metric);
+  const trend = data.change >= 0 ? "text-green-600" : "text-red-600";
+  return (
+    <div className="border rounded-lg p-4">
+      <p className="text-sm text-gray-500 uppercase">{data.label}</p>
+      <p className="text-2xl font-bold">{data.value}</p>
+      <p className={trend}>{data.change > 0 ? "+" : ""}{data.change}%</p>
+    </div>
+  );
+}
+
+async function TransactionsTable() {
+  const transactions = await fetchTransactions({ limit: 20 });
+  return (
+    <table className="w-full border-collapse">
+      <thead>
+        <tr className="border-b">
+          <th className="text-left p-2">Date</th>
+          <th className="text-left p-2">Description</th>
+          <th className="text-right p-2">Amount</th>
+        </tr>
+      </thead>
+      <tbody>
+        {transactions.map((tx: any) => (
+          <tr key={tx.id} className="border-b">
+            <td className="p-2">{tx.date}</td>
+            <td className="p-2">{tx.description}</td>
+            <td className="p-2 text-right">{tx.amount}</td>
+          </tr>
+        ))}
+      </tbody>
+    </table>
+  );
+}
+
+// Placeholder data fetchers
+async function fetchDashboardSummary() {
+  return { title: "Analytics Dashboard", lastUpdated: new Date().toLocaleDateString() };
+}
+async function fetchMetric(metric: string) {
+  return { label: metric, value: "$12,345", change: 5.2 };
+}
+async function fetchTransactions(opts: { limit: number }) {
+  return Array.from({ length: opts.limit }, (_, i) => ({
+    id: i, date: "2025-01-01", description: "Transaction", amount: "$100",
+  }));
+}
+async function RevenueChart() { return <div className="h-64 border rounded" />; }
+async function UserGrowthChart() { return <div className="h-64 border rounded" />; }`,
+};
+
+## Overview
+
+A streaming page architecture that uses nested Suspense boundaries to progressively reveal content as data loads. Each section is an independent async component that streams to the client when its data resolves, eliminating waterfall loading patterns.
+
+## Code
+
+```tsx
+<Suspense fallback={<Skeleton />}>
+  <SlowComponent />  {/* Streams in when ready */}
+</Suspense>
+```
+
+## Notes
+
+- Each Suspense boundary is an independent streaming slot; the page shell sends immediately
+- Individual KPI cards each have their own boundary so they appear as soon as their data loads
+- Skeletons should match the rendered layout dimensions to prevent layout shift (CLS)
+- Place boundaries at visual section breaks for the best perceived performance
+- Suspense only catches async components and lazy-loaded components, not useEffect fetches

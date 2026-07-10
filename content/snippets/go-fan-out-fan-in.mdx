@@ -1,0 +1,195 @@
+---
+title: "Fan-Out/Fan-In Pipeline"
+description: "A composable pipeline pattern with fan-out for parallel stage processing and fan-in to merge results from multiple goroutines."
+category: "Go"
+language: "go"
+tags: ["go", "concurrency", "pipeline", "fan-out", "production-ready"]
+createdAt: "2025-02-15"
+updatedAt: "2025-03-05"
+---
+
+export const codeBlocks = {
+  main: `package pipeline
+
+import (
+	"context"
+	"sync"
+)
+
+// Stage represents a single processing step in the pipeline
+type Stage[In any, Out any] func(ctx context.Context, in <-chan In) <-chan Out
+
+// Generator creates a channel from a slice of items
+func Generator[T any](ctx context.Context, items ...T) <-chan T {
+	out := make(chan T)
+	go func() {
+		defer close(out)
+		for _, item := range items {
+			select {
+			case <-ctx.Done():
+				return
+			case out <- item:
+			}
+		}
+	}()
+	return out
+}
+
+// FanOut distributes work from one channel to multiple workers
+func FanOut[In any, Out any](
+	ctx context.Context,
+	in <-chan In,
+	workers int,
+	fn func(context.Context, In) (Out, error),
+) []<-chan Result[Out] {
+	channels := make([]<-chan Result[Out], workers)
+	for i := 0; i < workers; i++ {
+		channels[i] = processStage(ctx, in, fn)
+	}
+	return channels
+}
+
+// Result wraps a value with potential error
+type Result[T any] struct {
+	Value T
+	Err   error
+}
+
+func processStage[In any, Out any](
+	ctx context.Context,
+	in <-chan In,
+	fn func(context.Context, In) (Out, error),
+) <-chan Result[Out] {
+	out := make(chan Result[Out])
+	go func() {
+		defer close(out)
+		for item := range in {
+			select {
+			case <-ctx.Done():
+				return
+			default:
+				value, err := fn(ctx, item)
+				out <- Result[Out]{Value: value, Err: err}
+			}
+		}
+	}()
+	return out
+}
+
+// FanIn merges multiple channels into one
+func FanIn[T any](ctx context.Context, channels ...<-chan T) <-chan T {
+	out := make(chan T)
+	var wg sync.WaitGroup
+
+	wg.Add(len(channels))
+	for _, ch := range channels {
+		go func(c <-chan T) {
+			defer wg.Done()
+			for item := range c {
+				select {
+				case <-ctx.Done():
+					return
+				case out <- item:
+				}
+			}
+		}(ch)
+	}
+
+	go func() {
+		wg.Wait()
+		close(out)
+	}()
+
+	return out
+}
+
+// Filter creates a stage that only passes items matching the predicate
+func Filter[T any](ctx context.Context, in <-chan T, predicate func(T) bool) <-chan T {
+	out := make(chan T)
+	go func() {
+		defer close(out)
+		for item := range in {
+			if predicate(item) {
+				select {
+				case <-ctx.Done():
+					return
+				case out <- item:
+				}
+			}
+		}
+	}()
+	return out
+}
+
+// Batch collects items into fixed-size batches
+func Batch[T any](ctx context.Context, in <-chan T, size int) <-chan []T {
+	out := make(chan []T)
+	go func() {
+		defer close(out)
+		batch := make([]T, 0, size)
+		for item := range in {
+			batch = append(batch, item)
+			if len(batch) >= size {
+				select {
+				case <-ctx.Done():
+					return
+				case out <- batch:
+				}
+				batch = make([]T, 0, size)
+			}
+		}
+		if len(batch) > 0 {
+			out <- batch
+		}
+	}()
+	return out
+}`,
+  usage: `ctx, cancel := context.WithCancel(context.Background())
+defer cancel()
+
+// Create pipeline: generate -> fan-out process -> fan-in -> filter -> batch
+urls := pipeline.Generator(ctx, urlList...)
+
+// Fan out to 5 workers for HTTP fetching
+fetched := pipeline.FanOut(ctx, urls, 5, func(ctx context.Context, url string) (Response, error) {
+    return httpGet(ctx, url)
+})
+
+// Merge results back into single stream
+merged := pipeline.FanIn(ctx, fetched...)
+
+// Filter successful results
+successes := pipeline.Filter(ctx, merged, func(r pipeline.Result[Response]) bool {
+    return r.Err == nil
+})
+
+// Batch for bulk insert
+batches := pipeline.Batch(ctx, successes, 100)
+
+for batch := range batches {
+    if err := bulkInsert(ctx, batch); err != nil {
+        log.Printf("Batch insert failed: %v", err)
+    }
+}`,
+};
+
+## Overview
+
+A composable pipeline toolkit using Go channels and goroutines. Each stage runs concurrently, connected by channels. Fan-out distributes work to parallel workers, and fan-in merges their outputs into a single stream for the next stage.
+
+## Code
+
+```go
+in := Generator(ctx, items...)
+workers := FanOut(ctx, in, 5, process)
+merged := FanIn(ctx, workers...)
+batches := Batch(ctx, merged, 100)
+```
+
+## Notes
+
+- Every stage respects context cancellation for clean pipeline shutdown
+- Channels are always closed by their producer (sender), never by the consumer
+- Fan-out allows multiple goroutines to read from the same channel (Go handles this safely)
+- The `Batch` stage is useful for bulk database inserts or API calls
+- Memory is bounded because channels buffer a fixed number of items

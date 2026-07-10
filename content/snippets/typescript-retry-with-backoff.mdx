@@ -1,0 +1,177 @@
+---
+title: "Retry with Exponential Backoff"
+description: "A configurable async retry utility with exponential backoff, jitter, and abort signal support for resilient API calls."
+category: "TypeScript"
+language: "typescript"
+tags: ["typescript", "async", "retry", "resilience", "production-ready"]
+createdAt: "2025-01-12"
+updatedAt: "2025-02-01"
+---
+
+export const codeBlocks = {
+  main: `interface RetryOptions {
+  maxAttempts: number;
+  baseDelayMs: number;
+  maxDelayMs: number;
+  backoffFactor: number;
+  jitter: boolean;
+  retryOn?: (error: unknown) => boolean;
+  onRetry?: (error: unknown, attempt: number, delayMs: number) => void;
+  signal?: AbortSignal;
+}
+
+const DEFAULT_OPTIONS: RetryOptions = {
+  maxAttempts: 3,
+  baseDelayMs: 1000,
+  maxDelayMs: 30000,
+  backoffFactor: 2,
+  jitter: true,
+};
+
+export class RetryAbortedError extends Error {
+  constructor() {
+    super("Retry aborted");
+    this.name = "RetryAbortedError";
+  }
+}
+
+export class MaxRetriesExceededError extends Error {
+  public readonly lastError: unknown;
+  public readonly attempts: number;
+
+  constructor(lastError: unknown, attempts: number) {
+    super(\`Max retries (\${attempts}) exceeded\`);
+    this.name = "MaxRetriesExceededError";
+    this.lastError = lastError;
+    this.attempts = attempts;
+  }
+}
+
+function calculateDelay(attempt: number, options: RetryOptions): number {
+  const exponentialDelay =
+    options.baseDelayMs * Math.pow(options.backoffFactor, attempt - 1);
+  const cappedDelay = Math.min(exponentialDelay, options.maxDelayMs);
+
+  if (options.jitter) {
+    // Full jitter: random value between 0 and cappedDelay
+    return Math.random() * cappedDelay;
+  }
+  return cappedDelay;
+}
+
+function sleep(ms: number, signal?: AbortSignal): Promise<void> {
+  return new Promise((resolve, reject) => {
+    if (signal?.aborted) {
+      reject(new RetryAbortedError());
+      return;
+    }
+    const timer = setTimeout(resolve, ms);
+    signal?.addEventListener("abort", () => {
+      clearTimeout(timer);
+      reject(new RetryAbortedError());
+    }, { once: true });
+  });
+}
+
+export async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  options?: Partial<RetryOptions>
+): Promise<T> {
+  const opts: RetryOptions = { ...DEFAULT_OPTIONS, ...options };
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= opts.maxAttempts; attempt++) {
+    try {
+      if (opts.signal?.aborted) {
+        throw new RetryAbortedError();
+      }
+      return await fn();
+    } catch (error) {
+      lastError = error;
+
+      if (error instanceof RetryAbortedError) {
+        throw error;
+      }
+
+      if (opts.retryOn && !opts.retryOn(error)) {
+        throw error;
+      }
+
+      if (attempt === opts.maxAttempts) {
+        break;
+      }
+
+      const delay = calculateDelay(attempt, opts);
+      opts.onRetry?.(error, attempt, delay);
+      await sleep(delay, opts.signal);
+    }
+  }
+
+  throw new MaxRetriesExceededError(lastError, opts.maxAttempts);
+}`,
+  usage: `// Basic usage with fetch
+const data = await retryWithBackoff(
+  () => fetch("/api/data").then(r => {
+    if (!r.ok) throw new Error(\`HTTP \${r.status}\`);
+    return r.json();
+  }),
+  {
+    maxAttempts: 5,
+    retryOn: (err) => {
+      if (err instanceof Error && err.message.includes("HTTP 4")) return false;
+      return true; // retry on network/5xx errors
+    },
+    onRetry: (err, attempt, delay) => {
+      console.warn(\`Attempt \${attempt} failed, retrying in \${delay}ms\`);
+    },
+  }
+);
+
+// With AbortController for timeout
+const controller = new AbortController();
+setTimeout(() => controller.abort(), 10000);
+
+await retryWithBackoff(fetchData, { signal: controller.signal });`,
+};
+
+## Overview
+
+A production-grade retry utility implementing exponential backoff with full jitter, as recommended by AWS architecture best practices. It prevents thundering herd problems when services recover from outages by randomizing retry intervals.
+
+## Code
+
+```typescript
+export async function retryWithBackoff<T>(
+  fn: () => Promise<T>,
+  options?: Partial<RetryOptions>
+): Promise<T> {
+  const opts: RetryOptions = { ...DEFAULT_OPTIONS, ...options };
+  let lastError: unknown;
+
+  for (let attempt = 1; attempt <= opts.maxAttempts; attempt++) {
+    try {
+      if (opts.signal?.aborted) throw new RetryAbortedError();
+      return await fn();
+    } catch (error) {
+      lastError = error;
+      if (error instanceof RetryAbortedError) throw error;
+      if (opts.retryOn && !opts.retryOn(error)) throw error;
+      if (attempt === opts.maxAttempts) break;
+
+      const delay = calculateDelay(attempt, opts);
+      opts.onRetry?.(error, attempt, delay);
+      await sleep(delay, opts.signal);
+    }
+  }
+
+  throw new MaxRetriesExceededError(lastError, opts.maxAttempts);
+}
+```
+
+## Notes
+
+- Full jitter prevents synchronized retries across distributed clients
+- The `retryOn` predicate allows filtering non-retryable errors (4xx responses, validation errors)
+- AbortSignal support enables timeout-based cancellation of the entire retry sequence
+- Custom error types (`MaxRetriesExceededError`) preserve the original error for debugging
+- Base delay of 1000ms with factor 2 gives delays of: 1s, 2s, 4s, 8s, 16s (before jitter)

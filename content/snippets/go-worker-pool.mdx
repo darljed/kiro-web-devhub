@@ -1,0 +1,165 @@
+---
+title: "Concurrent Worker Pool"
+description: "A generic worker pool pattern using goroutines and channels for bounded parallel processing with graceful shutdown."
+category: "Go"
+language: "go"
+tags: ["go", "concurrency", "worker-pool", "channels", "production-ready"]
+createdAt: "2025-01-20"
+updatedAt: "2025-02-10"
+---
+
+export const codeBlocks = {
+  main: `package workerpool
+
+import (
+	"context"
+	"sync"
+	"sync/atomic"
+)
+
+type Job[T any, R any] struct {
+	ID    int
+	Input T
+}
+
+type Result[R any] struct {
+	JobID int
+	Value R
+	Err   error
+}
+
+type Pool[T any, R any] struct {
+	workers    int
+	jobChan    chan Job[T, R]
+	resultChan chan Result[R]
+	handler    func(context.Context, T) (R, error)
+	wg         sync.WaitGroup
+	processed  int64
+	failed     int64
+}
+
+func New[T any, R any](workers int, bufferSize int, handler func(context.Context, T) (R, error)) *Pool[T, R] {
+	return &Pool[T, R]{
+		workers:    workers,
+		jobChan:    make(chan Job[T, R], bufferSize),
+		resultChan: make(chan Result[R], bufferSize),
+		handler:    handler,
+	}
+}
+
+func (p *Pool[T, R]) Start(ctx context.Context) {
+	for i := 0; i < p.workers; i++ {
+		p.wg.Add(1)
+		go p.worker(ctx)
+	}
+
+	// Close results channel when all workers finish
+	go func() {
+		p.wg.Wait()
+		close(p.resultChan)
+	}()
+}
+
+func (p *Pool[T, R]) worker(ctx context.Context) {
+	defer p.wg.Done()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case job, ok := <-p.jobChan:
+			if !ok {
+				return
+			}
+			result, err := p.handler(ctx, job.Input)
+			if err != nil {
+				atomic.AddInt64(&p.failed, 1)
+				p.resultChan <- Result[R]{JobID: job.ID, Err: err}
+			} else {
+				atomic.AddInt64(&p.processed, 1)
+				p.resultChan <- Result[R]{JobID: job.ID, Value: result}
+			}
+		}
+	}
+}
+
+func (p *Pool[T, R]) Submit(job Job[T, R]) {
+	p.jobChan <- job
+}
+
+func (p *Pool[T, R]) Close() {
+	close(p.jobChan)
+}
+
+func (p *Pool[T, R]) Results() <-chan Result[R] {
+	return p.resultChan
+}
+
+func (p *Pool[T, R]) Stats() (processed, failed int64) {
+	return atomic.LoadInt64(&p.processed), atomic.LoadInt64(&p.failed)
+}
+
+// Convenience function for simple map-style parallelism
+func Map[T any, R any](ctx context.Context, items []T, workers int, fn func(context.Context, T) (R, error)) ([]Result[R], error) {
+	pool := New[T, R](workers, len(items), fn)
+	pool.Start(ctx)
+
+	// Submit all jobs
+	go func() {
+		for i, item := range items {
+			pool.Submit(Job[T, R]{ID: i, Input: item})
+		}
+		pool.Close()
+	}()
+
+	// Collect results
+	results := make([]Result[R], 0, len(items))
+	for result := range pool.Results() {
+		results = append(results, result)
+	}
+
+	return results, nil
+}`,
+  usage: `// Process URLs concurrently with 10 workers
+ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+defer cancel()
+
+results, _ := workerpool.Map(ctx, urls, 10, func(ctx context.Context, url string) ([]byte, error) {
+    req, _ := http.NewRequestWithContext(ctx, "GET", url, nil)
+    resp, err := http.DefaultClient.Do(req)
+    if err != nil {
+        return nil, err
+    }
+    defer resp.Body.Close()
+    return io.ReadAll(resp.Body)
+})
+
+for _, r := range results {
+    if r.Err != nil {
+        log.Printf("Job %d failed: %v", r.JobID, r.Err)
+    } else {
+        log.Printf("Job %d: got %d bytes", r.JobID, len(r.Value))
+    }
+}`,
+};
+
+## Overview
+
+A generic worker pool using Go 1.18+ generics that distributes work across a fixed number of goroutines via channels. Supports context cancellation, bounded concurrency, and type-safe results without interface{} assertions.
+
+## Code
+
+```go
+pool := workerpool.New[string, []byte](10, 100, fetchURL)
+pool.Start(ctx)
+pool.Submit(Job{ID: 1, Input: "https://..."})
+pool.Close()
+for result := range pool.Results() { ... }
+```
+
+## Notes
+
+- Generics eliminate the need for type assertions on inputs and outputs
+- Buffered channels prevent goroutine leaks when producers are faster than workers
+- Context cancellation provides clean shutdown when deadlines are exceeded
+- `Map` is a convenience wrapper for simple parallel-map operations
+- Atomic counters track processed/failed counts without lock contention

@@ -1,0 +1,90 @@
+---
+title: "Correlation Search Patterns"
+description: "SPL queries that correlate events across multiple data sources for incident investigation and root cause analysis."
+category: "Splunk"
+language: "spl"
+tags: ["splunk", "correlation", "incident-response", "investigation", "production-ready"]
+createdAt: "2025-03-01"
+updatedAt: "2025-03-20"
+---
+
+export const codeBlocks = {
+  main: `| Correlate deployment events with error spikes
+index=application sourcetype=access_combined status>=500
+| timechart span=5m count as error_count
+| join type=left _time [
+    search index=deployments sourcetype=deploy_events
+    | eval _time=round(_time/300)*300
+    | stats values(service) as deployed_service, values(version) as deployed_version by _time
+]
+| where isnotnull(deployed_service)
+| eval correlation="Errors spiked after deploying " . deployed_service . " v" . deployed_version
+
+| Cross-index user journey tracing
+index=application OR index=auth OR index=payment
+| transaction session_id maxspan=30m
+| eval journey_steps=mvcount(sourcetype)
+| eval has_error=if(searchmatch("status>=500 OR error"), 1, 0)
+| eval has_payment=if(searchmatch("sourcetype=payment"), 1, 0)
+| stats
+    count as total_sessions,
+    sum(has_error) as error_sessions,
+    sum(has_payment) as payment_sessions,
+    avg(duration) as avg_session_duration
+| eval conversion_rate=round((payment_sessions/total_sessions)*100, 2)
+| eval error_impact_pct=round((error_sessions/total_sessions)*100, 2)
+
+| Infrastructure-to-application correlation
+index=infrastructure (cpu_pct>90 OR memory_pct>95 OR disk_io_wait>50)
+| stats earliest(_time) as infra_event_time, values(metric_name) as affected_metrics by host
+| join host [
+    search index=application sourcetype=access_combined status>=500
+    | stats earliest(_time) as app_error_time, count as error_count by host
+]
+| eval time_diff_seconds=app_error_time - infra_event_time
+| where time_diff_seconds >= 0 AND time_diff_seconds <= 300
+| eval probable_cause=case(
+    match(affected_metrics, "cpu"), "CPU saturation caused request failures",
+    match(affected_metrics, "memory"), "Memory pressure caused OOM/slowdown",
+    match(affected_metrics, "disk"), "Disk I/O contention caused timeouts",
+    1=1, "Infrastructure issue correlated with errors"
+)
+| table host, infra_event_time, app_error_time, time_diff_seconds, affected_metrics, error_count, probable_cause
+
+| Authentication failure correlation (brute force detection)
+index=auth action=failure
+| stats
+    count as failure_count,
+    dc(user) as targeted_accounts,
+    dc(src_ip) as source_ips,
+    values(user) as attempted_users,
+    latest(_time) as latest_attempt
+    by src_ip
+| where failure_count > 20 AND targeted_accounts > 3
+| eval attack_type=case(
+    targeted_accounts > 10 AND source_ips=1, "credential_stuffing",
+    targeted_accounts=1 AND failure_count > 50, "brute_force",
+    source_ips > 5, "distributed_attack",
+    1=1, "suspicious_activity"
+)`,
+};
+
+## Overview
+
+Correlation searches that join events across multiple indexes and source types to establish causality between infrastructure changes, deployments, and application errors. These are essential for reducing mean time to resolution (MTTR) during incidents.
+
+## Code
+
+```spl
+index=application status>=500
+| join type=left host [search index=infrastructure cpu_pct>90]
+| where isnotnull(cpu_pct)
+```
+
+## Notes
+
+- Use `transaction` for grouping events by session/request ID across sources
+- `join` with time window correlation identifies causal relationships (deploy then errors)
+- Keep correlation windows tight (5-15 min) to reduce false positives
+- `dc()` (distinct count) helps identify distributed vs. single-source attack patterns
+- Schedule these as saved searches for automatic incident enrichment

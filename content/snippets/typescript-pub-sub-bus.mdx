@@ -1,0 +1,174 @@
+---
+title: "In-Process Pub/Sub Event Bus"
+description: "A decoupled publish/subscribe event bus with async handlers, error isolation, and dead letter queue for reliable event-driven architectures."
+category: "TypeScript"
+language: "typescript"
+tags: ["typescript", "pub-sub", "event-bus", "architecture", "production-ready"]
+createdAt: "2025-04-01"
+updatedAt: "2025-04-15"
+---
+
+export const codeBlocks = {
+  main: `interface EventHandler<T = unknown> {
+  (payload: T): void | Promise<void>;
+}
+
+interface Subscription {
+  topic: string;
+  handler: EventHandler;
+  id: string;
+}
+
+interface DeadLetter {
+  topic: string;
+  payload: unknown;
+  error: Error;
+  timestamp: number;
+  handlerId: string;
+}
+
+export class EventBus {
+  private subscriptions = new Map<string, Subscription[]>();
+  private deadLetters: DeadLetter[] = [];
+  private maxDeadLetters: number;
+
+  constructor(options?: { maxDeadLetters?: number }) {
+    this.maxDeadLetters = options?.maxDeadLetters ?? 100;
+  }
+
+  subscribe<T>(topic: string, handler: EventHandler<T>): () => void {
+    const subscription: Subscription = {
+      topic,
+      handler: handler as EventHandler,
+      id: crypto.randomUUID(),
+    };
+
+    if (!this.subscriptions.has(topic)) {
+      this.subscriptions.set(topic, []);
+    }
+    this.subscriptions.get(topic)!.push(subscription);
+
+    // Return unsubscribe function
+    return () => {
+      const subs = this.subscriptions.get(topic);
+      if (subs) {
+        const index = subs.findIndex((s) => s.id === subscription.id);
+        if (index !== -1) subs.splice(index, 1);
+      }
+    };
+  }
+
+  async publish<T>(topic: string, payload: T): Promise<void> {
+    const subs = this.subscriptions.get(topic) ?? [];
+
+    // Execute all handlers concurrently with error isolation
+    const results = await Promise.allSettled(
+      subs.map(async (sub) => {
+        try {
+          await sub.handler(payload);
+        } catch (error) {
+          this.addDeadLetter({
+            topic,
+            payload,
+            error: error instanceof Error ? error : new Error(String(error)),
+            timestamp: Date.now(),
+            handlerId: sub.id,
+          });
+          throw error;
+        }
+      })
+    );
+
+    // Count failures for monitoring
+    const failures = results.filter((r) => r.status === "rejected").length;
+    if (failures > 0) {
+      console.warn(\`EventBus: \${failures}/\${subs.length} handlers failed for topic "\${topic}"\`);
+    }
+  }
+
+  publishSync<T>(topic: string, payload: T): void {
+    const subs = this.subscriptions.get(topic) ?? [];
+    for (const sub of subs) {
+      try {
+        sub.handler(payload);
+      } catch (error) {
+        this.addDeadLetter({
+          topic,
+          payload,
+          error: error instanceof Error ? error : new Error(String(error)),
+          timestamp: Date.now(),
+          handlerId: sub.id,
+        });
+      }
+    }
+  }
+
+  private addDeadLetter(letter: DeadLetter): void {
+    this.deadLetters.push(letter);
+    if (this.deadLetters.length > this.maxDeadLetters) {
+      this.deadLetters.shift();
+    }
+  }
+
+  getDeadLetters(): DeadLetter[] {
+    return [...this.deadLetters];
+  }
+
+  getTopics(): string[] {
+    return [...this.subscriptions.keys()];
+  }
+
+  getSubscriberCount(topic: string): number {
+    return this.subscriptions.get(topic)?.length ?? 0;
+  }
+
+  clear(): void {
+    this.subscriptions.clear();
+    this.deadLetters = [];
+  }
+}`,
+  usage: `const bus = new EventBus();
+
+// Subscribe to events
+const unsub = bus.subscribe<{ userId: string; plan: string }>(
+  "user:upgraded",
+  async ({ userId, plan }) => {
+    await sendWelcomeEmail(userId, plan);
+    await provisionFeatures(userId, plan);
+  }
+);
+
+bus.subscribe("user:upgraded", async ({ userId }) => {
+  await analytics.track("plan_upgrade", { userId });
+});
+
+// Publish event - all handlers execute concurrently
+await bus.publish("user:upgraded", { userId: "u_123", plan: "pro" });
+
+// Check for failures
+const failures = bus.getDeadLetters();
+
+// Cleanup
+unsub();`,
+};
+
+## Overview
+
+A lightweight in-process event bus that decouples producers from consumers. Handlers for the same topic execute concurrently with error isolation, so one failing handler does not prevent others from running. Failed events are captured in a dead letter queue for debugging and replay.
+
+## Code
+
+```typescript
+const bus = new EventBus();
+const unsub = bus.subscribe("topic", async (payload) => { ... });
+await bus.publish("topic", { data: "value" });
+unsub(); // cleanup
+```
+
+## Notes
+
+- Error isolation ensures one failing subscriber does not break other subscribers
+- Dead letter queue captures failed events for debugging and potential replay
+- The unsubscribe function return pattern prevents memory leaks
+- Use `publishSync` for fire-and-forget scenarios where you do not need to await handlers
+- For cross-process events, upgrade to Redis Pub/Sub or a message queue like RabbitMQ

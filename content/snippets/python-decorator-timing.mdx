@@ -1,0 +1,173 @@
+---
+title: "Execution Timing Decorator"
+description: "A flexible timing decorator that captures execution duration, emits metrics, supports async functions, and integrates with logging."
+category: "Python"
+language: "python"
+tags: ["python", "decorator", "monitoring", "performance", "production-ready"]
+createdAt: "2025-02-12"
+updatedAt: "2025-03-01"
+---
+
+export const codeBlocks = {
+  main: `import time
+import functools
+import asyncio
+import logging
+from typing import TypeVar, Callable, ParamSpec, overload, Any
+from contextlib import contextmanager
+from dataclasses import dataclass, field
+
+P = ParamSpec("P")
+R = TypeVar("R")
+
+logger = logging.getLogger(__name__)
+
+
+@dataclass
+class TimingStats:
+    """Accumulated timing statistics for a function."""
+    name: str
+    call_count: int = 0
+    total_ms: float = 0.0
+    min_ms: float = float("inf")
+    max_ms: float = 0.0
+    _durations: list[float] = field(default_factory=list, repr=False)
+
+    def record(self, duration_ms: float) -> None:
+        self.call_count += 1
+        self.total_ms += duration_ms
+        self.min_ms = min(self.min_ms, duration_ms)
+        self.max_ms = max(self.max_ms, duration_ms)
+        self._durations.append(duration_ms)
+
+    @property
+    def avg_ms(self) -> float:
+        return self.total_ms / self.call_count if self.call_count > 0 else 0.0
+
+    @property
+    def p95_ms(self) -> float:
+        if not self._durations:
+            return 0.0
+        sorted_d = sorted(self._durations)
+        idx = int(len(sorted_d) * 0.95)
+        return sorted_d[min(idx, len(sorted_d) - 1)]
+
+    def __repr__(self) -> str:
+        return (
+            f"TimingStats({self.name}: calls={self.call_count}, "
+            f"avg={self.avg_ms:.2f}ms, p95={self.p95_ms:.2f}ms, "
+            f"min={self.min_ms:.2f}ms, max={self.max_ms:.2f}ms)"
+        )
+
+
+# Global stats registry
+_stats_registry: dict[str, TimingStats] = {}
+
+
+def get_all_stats() -> dict[str, TimingStats]:
+    return dict(_stats_registry)
+
+
+def timed(
+    name: str | None = None,
+    *,
+    log_level: int = logging.DEBUG,
+    slow_threshold_ms: float | None = None,
+    emit_metric: Callable[[str, float], None] | None = None,
+):
+    """Decorator that times function execution with optional alerting.
+
+    Args:
+        name: Custom name for the timer (defaults to function qualname)
+        log_level: Logging level for timing messages
+        slow_threshold_ms: Log a warning if execution exceeds this threshold
+        emit_metric: Callback to emit timing to external metrics system
+    """
+    def decorator(func: Callable[P, R]) -> Callable[P, R]:
+        timer_name = name or func.__qualname__
+        stats = TimingStats(name=timer_name)
+        _stats_registry[timer_name] = stats
+
+        if asyncio.iscoroutinefunction(func):
+            @functools.wraps(func)
+            async def async_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+                start = time.perf_counter()
+                try:
+                    return await func(*args, **kwargs)
+                finally:
+                    duration_ms = (time.perf_counter() - start) * 1000
+                    stats.record(duration_ms)
+                    logger.log(log_level, "%s completed in %.2fms", timer_name, duration_ms)
+                    if slow_threshold_ms and duration_ms > slow_threshold_ms:
+                        logger.warning("%s is slow: %.2fms (threshold: %.2fms)", timer_name, duration_ms, slow_threshold_ms)
+                    if emit_metric:
+                        emit_metric(timer_name, duration_ms)
+            return async_wrapper  # type: ignore
+        else:
+            @functools.wraps(func)
+            def sync_wrapper(*args: P.args, **kwargs: P.kwargs) -> R:
+                start = time.perf_counter()
+                try:
+                    return func(*args, **kwargs)
+                finally:
+                    duration_ms = (time.perf_counter() - start) * 1000
+                    stats.record(duration_ms)
+                    logger.log(log_level, "%s completed in %.2fms", timer_name, duration_ms)
+                    if slow_threshold_ms and duration_ms > slow_threshold_ms:
+                        logger.warning("%s is slow: %.2fms (threshold: %.2fms)", timer_name, duration_ms, slow_threshold_ms)
+                    if emit_metric:
+                        emit_metric(timer_name, duration_ms)
+            sync_wrapper.stats = stats  # type: ignore
+            return sync_wrapper
+
+    return decorator
+
+
+@contextmanager
+def timer(name: str = "block"):
+    """Context manager for timing code blocks."""
+    start = time.perf_counter()
+    yield
+    duration_ms = (time.perf_counter() - start) * 1000
+    logger.debug("%s completed in %.2fms", name, duration_ms)`,
+  usage: `@timed(slow_threshold_ms=200, emit_metric=datadog.timing)
+async def fetch_user_data(user_id: str) -> dict:
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"/api/users/{user_id}")
+        return resp.json()
+
+# After several calls
+print(fetch_user_data.stats)
+# TimingStats(fetch_user_data: calls=42, avg=85.30ms, p95=180.20ms)
+
+# Context manager for code blocks
+with timer("database_migration"):
+    run_migrations()
+
+# View all registered timers
+for name, stats in get_all_stats().items():
+    print(f"{name}: {stats.avg_ms:.1f}ms avg, {stats.call_count} calls")`,
+};
+
+## Overview
+
+A timing decorator that tracks execution duration, accumulates statistics (min, max, avg, p95), alerts on slow executions, and optionally emits metrics to external systems. Works with both sync and async functions.
+
+## Code
+
+```python
+@timed(slow_threshold_ms=100)
+def slow_operation():
+    ...
+
+with timer("block_name"):
+    ...
+```
+
+## Notes
+
+- `time.perf_counter()` provides the highest resolution timer available on the platform
+- The stats registry enables a `/metrics` endpoint to expose all timing data
+- `slow_threshold_ms` triggers WARNING-level logs for performance regression detection
+- The `emit_metric` callback integrates with DataDog, Prometheus, or StatsD
+- Supports both sync and async functions via `asyncio.iscoroutinefunction` detection

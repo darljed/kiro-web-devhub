@@ -1,0 +1,160 @@
+---
+title: "Type-Safe Observer Pattern"
+description: "A generic event emitter with full type inference for event names and payload types, supporting once listeners and wildcard subscriptions."
+category: "TypeScript"
+language: "typescript"
+tags: ["typescript", "design-patterns", "observer", "events", "production-ready"]
+createdAt: "2025-01-20"
+updatedAt: "2025-02-10"
+---
+
+export const codeBlocks = {
+  main: `type EventMap = Record<string, unknown>;
+type EventCallback<T = unknown> = (payload: T) => void;
+
+interface Subscription {
+  unsubscribe(): void;
+}
+
+export class TypedEventEmitter<Events extends EventMap> {
+  private listeners = new Map<keyof Events, Set<EventCallback>>();
+  private onceListeners = new Map<keyof Events, Set<EventCallback>>();
+  private wildcardListeners = new Set<EventCallback<{ event: keyof Events; payload: unknown }>>();
+
+  on<K extends keyof Events>(event: K, callback: EventCallback<Events[K]>): Subscription {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    this.listeners.get(event)!.add(callback as EventCallback);
+
+    return {
+      unsubscribe: () => {
+        this.listeners.get(event)?.delete(callback as EventCallback);
+      },
+    };
+  }
+
+  once<K extends keyof Events>(event: K, callback: EventCallback<Events[K]>): Subscription {
+    if (!this.onceListeners.has(event)) {
+      this.onceListeners.set(event, new Set());
+    }
+    this.onceListeners.get(event)!.add(callback as EventCallback);
+
+    return {
+      unsubscribe: () => {
+        this.onceListeners.get(event)?.delete(callback as EventCallback);
+      },
+    };
+  }
+
+  onAny(callback: EventCallback<{ event: keyof Events; payload: unknown }>): Subscription {
+    this.wildcardListeners.add(callback);
+    return {
+      unsubscribe: () => {
+        this.wildcardListeners.delete(callback);
+      },
+    };
+  }
+
+  emit<K extends keyof Events>(event: K, payload: Events[K]): void {
+    // Regular listeners
+    this.listeners.get(event)?.forEach((cb) => cb(payload));
+
+    // Once listeners (fire and remove)
+    const onceSet = this.onceListeners.get(event);
+    if (onceSet) {
+      onceSet.forEach((cb) => cb(payload));
+      onceSet.clear();
+    }
+
+    // Wildcard listeners
+    this.wildcardListeners.forEach((cb) => cb({ event, payload }));
+  }
+
+  off<K extends keyof Events>(event: K, callback: EventCallback<Events[K]>): void {
+    this.listeners.get(event)?.delete(callback as EventCallback);
+    this.onceListeners.get(event)?.delete(callback as EventCallback);
+  }
+
+  removeAllListeners(event?: keyof Events): void {
+    if (event) {
+      this.listeners.delete(event);
+      this.onceListeners.delete(event);
+    } else {
+      this.listeners.clear();
+      this.onceListeners.clear();
+      this.wildcardListeners.clear();
+    }
+  }
+
+  listenerCount(event: keyof Events): number {
+    return (
+      (this.listeners.get(event)?.size ?? 0) +
+      (this.onceListeners.get(event)?.size ?? 0)
+    );
+  }
+}`,
+  usage: `// Define your event types
+interface AppEvents {
+  "user:login": { userId: string; timestamp: Date };
+  "user:logout": { userId: string };
+  "cart:update": { items: string[]; total: number };
+  "error": { code: string; message: string };
+}
+
+const emitter = new TypedEventEmitter<AppEvents>();
+
+// Full type inference on event names and payloads
+const sub = emitter.on("user:login", ({ userId, timestamp }) => {
+  console.log(\`User \${userId} logged in at \${timestamp}\`);
+});
+
+// One-time listener
+emitter.once("cart:update", ({ items, total }) => {
+  console.log(\`First cart update: \${items.length} items, $\${total}\`);
+});
+
+// Wildcard for logging/debugging
+emitter.onAny(({ event, payload }) => {
+  console.debug(\`[Event] \${String(event)}:\`, payload);
+});
+
+// Cleanup
+sub.unsubscribe();`,
+};
+
+## Overview
+
+A fully typed event emitter that provides compile-time checking for event names and their payloads. Unlike Node.js EventEmitter, this implementation catches misspelled event names and wrong payload types at build time rather than runtime.
+
+## Code
+
+```typescript
+export class TypedEventEmitter<Events extends EventMap> {
+  private listeners = new Map<keyof Events, Set<EventCallback>>();
+
+  on<K extends keyof Events>(event: K, callback: EventCallback<Events[K]>): Subscription {
+    if (!this.listeners.has(event)) {
+      this.listeners.set(event, new Set());
+    }
+    this.listeners.get(event)!.add(callback as EventCallback);
+    return {
+      unsubscribe: () => {
+        this.listeners.get(event)?.delete(callback as EventCallback);
+      },
+    };
+  }
+
+  emit<K extends keyof Events>(event: K, payload: Events[K]): void {
+    this.listeners.get(event)?.forEach((cb) => cb(payload));
+  }
+}
+```
+
+## Notes
+
+- Event names are constrained to the keys of the Events generic type
+- Payloads are inferred from the Events mapping, providing full autocomplete
+- The `Subscription` return pattern prevents memory leaks by making cleanup explicit
+- Wildcard listeners (`onAny`) are useful for logging, debugging, and analytics
+- `once` listeners auto-remove after first invocation

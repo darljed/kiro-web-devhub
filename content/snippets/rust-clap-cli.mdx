@@ -1,0 +1,236 @@
+---
+title: "CLI with Clap Derive"
+description: "A production CLI application using clap's derive macros for type-safe argument parsing with subcommands, validation, and help generation."
+category: "Rust"
+language: "rust"
+tags: ["rust", "cli", "clap", "derive", "production-ready"]
+createdAt: "2025-02-20"
+updatedAt: "2025-03-10"
+---
+
+export const codeBlocks = {
+  main: `use clap::{Parser, Subcommand, Args, ValueEnum};
+use std::path::PathBuf;
+
+/// A file processing CLI tool with rich argument parsing
+#[derive(Parser, Debug)]
+#[command(
+    name = "filetool",
+    version,
+    about = "A Swiss Army knife for file operations",
+    long_about = "Process, transform, and analyze files with various strategies."
+)]
+pub struct Cli {
+    /// Increase verbosity (-v, -vv, -vvv)
+    #[arg(short, long, action = clap::ArgAction::Count, global = true)]
+    verbose: u8,
+
+    /// Output format
+    #[arg(short, long, value_enum, default_value_t = OutputFormat::Text, global = true)]
+    format: OutputFormat,
+
+    /// Configuration file path
+    #[arg(short, long, env = "FILETOOL_CONFIG")]
+    config: Option<PathBuf>,
+
+    #[command(subcommand)]
+    command: Command,
+}
+
+#[derive(Subcommand, Debug)]
+enum Command {
+    /// Process files with transformation rules
+    Process(ProcessArgs),
+
+    /// Analyze file contents and generate reports
+    Analyze(AnalyzeArgs),
+
+    /// Watch directory for changes
+    Watch(WatchArgs),
+
+    /// Manage configuration
+    Config {
+        #[command(subcommand)]
+        action: ConfigAction,
+    },
+}
+
+#[derive(Args, Debug)]
+struct ProcessArgs {
+    /// Input file or directory
+    #[arg(required = true)]
+    input: PathBuf,
+
+    /// Output directory
+    #[arg(short, long, default_value = "./output")]
+    output: PathBuf,
+
+    /// Processing strategy
+    #[arg(short, long, value_enum, default_value_t = Strategy::Sequential)]
+    strategy: Strategy,
+
+    /// Number of worker threads
+    #[arg(short, long, default_value_t = num_cpus::get())]
+    workers: usize,
+
+    /// Maximum file size to process (in bytes)
+    #[arg(long, default_value_t = 100_000_000)]
+    max_size: u64,
+
+    /// File patterns to include (glob)
+    #[arg(short = 'I', long, default_values_t = vec!["*".to_string()])]
+    include: Vec<String>,
+
+    /// File patterns to exclude (glob)
+    #[arg(short = 'E', long)]
+    exclude: Vec<String>,
+
+    /// Dry run (show what would be done)
+    #[arg(long, default_value_t = false)]
+    dry_run: bool,
+}
+
+#[derive(Args, Debug)]
+struct AnalyzeArgs {
+    /// Files to analyze
+    #[arg(required = true, num_args = 1..)]
+    files: Vec<PathBuf>,
+
+    /// Analysis depth
+    #[arg(short, long, default_value_t = 3, value_parser = clap::value_parser!(u8).range(1..=10))]
+    depth: u8,
+
+    /// Generate checksum
+    #[arg(long)]
+    checksum: bool,
+}
+
+#[derive(Args, Debug)]
+struct WatchArgs {
+    /// Directory to watch
+    #[arg(default_value = ".")]
+    directory: PathBuf,
+
+    /// Debounce delay in milliseconds
+    #[arg(short, long, default_value_t = 300)]
+    debounce: u64,
+
+    /// Command to run on changes
+    #[arg(short, long)]
+    exec: Option<String>,
+}
+
+#[derive(Subcommand, Debug)]
+enum ConfigAction {
+    /// Show current configuration
+    Show,
+    /// Set a configuration value
+    Set {
+        key: String,
+        value: String,
+    },
+    /// Initialize default configuration
+    Init {
+        #[arg(long)]
+        force: bool,
+    },
+}
+
+#[derive(ValueEnum, Clone, Debug)]
+enum OutputFormat {
+    Text,
+    Json,
+    Csv,
+    Table,
+}
+
+#[derive(ValueEnum, Clone, Debug)]
+enum Strategy {
+    Sequential,
+    Parallel,
+    Streaming,
+}
+
+impl Cli {
+    pub fn log_level(&self) -> &str {
+        match self.verbose {
+            0 => "warn",
+            1 => "info",
+            2 => "debug",
+            _ => "trace",
+        }
+    }
+}
+
+fn main() -> anyhow::Result<()> {
+    let cli = Cli::parse();
+
+    // Initialize logging based on verbosity
+    tracing_subscriber::fmt()
+        .with_env_filter(cli.log_level())
+        .init();
+
+    match cli.command {
+        Command::Process(args) => {
+            if args.dry_run {
+                println!("DRY RUN: Would process {:?} -> {:?}", args.input, args.output);
+                println!("Strategy: {:?}, Workers: {}", args.strategy, args.workers);
+                return Ok(());
+            }
+            process_files(args)?;
+        }
+        Command::Analyze(args) => analyze_files(args)?,
+        Command::Watch(args) => watch_directory(args)?,
+        Command::Config { action } => handle_config(action)?,
+    }
+
+    Ok(())
+}
+
+fn process_files(_args: ProcessArgs) -> anyhow::Result<()> { Ok(()) }
+fn analyze_files(_args: AnalyzeArgs) -> anyhow::Result<()> { Ok(()) }
+fn watch_directory(_args: WatchArgs) -> anyhow::Result<()> { Ok(()) }
+fn handle_config(_action: ConfigAction) -> anyhow::Result<()> { Ok(()) }`,
+  usage: `# Process files in parallel with 8 workers
+$ filetool process ./data -o ./output -s parallel -w 8 --include "*.json"
+
+# Analyze files with verbose output in JSON format
+$ filetool -vv -f json analyze file1.txt file2.txt --depth 5
+
+# Watch for changes and rebuild
+$ filetool watch ./src --debounce 500 --exec "cargo build"
+
+# Configuration management
+$ filetool config init --force
+$ filetool config set output.format json
+
+# Environment variable for config path
+$ FILETOOL_CONFIG=~/.filetool.toml filetool process .`,
+};
+
+## Overview
+
+A structured CLI application using clap's derive macros for zero-boilerplate argument parsing. Supports nested subcommands, value enums, environment variable fallbacks, value validation, and automatic help/version generation.
+
+## Code
+
+```rust
+#[derive(Parser)]
+struct Cli {
+    #[arg(short, long, value_enum)]
+    format: OutputFormat,
+    #[command(subcommand)]
+    command: Command,
+}
+
+let cli = Cli::parse();
+```
+
+## Notes
+
+- `#[command(version)]` auto-reads version from Cargo.toml
+- `#[arg(env = "...")]` provides environment variable fallback for configuration
+- `value_parser` with `.range()` validates numeric arguments at parse time
+- `action = Count` enables `-vvv` style verbosity flags
+- `num_args = 1..` requires at least one positional argument
+- Global args (with `global = true`) are inherited by all subcommands

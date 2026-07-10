@@ -1,0 +1,150 @@
+---
+title: "FastAPI Request Middleware"
+description: "Production middleware for FastAPI with request ID injection, timing, structured logging, and CORS configuration."
+category: "Python"
+language: "python"
+tags: ["python", "fastapi", "middleware", "logging", "production-ready"]
+createdAt: "2025-01-15"
+updatedAt: "2025-02-05"
+---
+
+export const codeBlocks = {
+  main: `import time
+import uuid
+import logging
+from contextvars import ContextVar
+from typing import Callable
+
+from fastapi import FastAPI, Request, Response
+from starlette.middleware.base import BaseHTTPMiddleware, RequestResponseEndpoint
+import structlog
+
+# Context variable for request-scoped data
+request_id_var: ContextVar[str] = ContextVar("request_id", default="")
+
+app = FastAPI()
+
+class RequestContextMiddleware(BaseHTTPMiddleware):
+    """Inject request ID and timing into every request."""
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        # Generate or extract request ID
+        request_id = request.headers.get("X-Request-ID", str(uuid.uuid4()))
+        request_id_var.set(request_id)
+
+        # Start timing
+        start_time = time.perf_counter()
+
+        # Process request
+        try:
+            response = await call_next(request)
+        except Exception as exc:
+            duration_ms = (time.perf_counter() - start_time) * 1000
+            structlog.get_logger().error(
+                "request_failed",
+                request_id=request_id,
+                method=request.method,
+                path=request.url.path,
+                duration_ms=round(duration_ms, 2),
+                error=str(exc),
+            )
+            raise
+
+        # Calculate duration
+        duration_ms = (time.perf_counter() - start_time) * 1000
+
+        # Add response headers
+        response.headers["X-Request-ID"] = request_id
+        response.headers["X-Response-Time"] = f"{duration_ms:.2f}ms"
+
+        # Structured logging
+        structlog.get_logger().info(
+            "request_completed",
+            request_id=request_id,
+            method=request.method,
+            path=request.url.path,
+            status_code=response.status_code,
+            duration_ms=round(duration_ms, 2),
+            client_ip=request.client.host if request.client else "unknown",
+            user_agent=request.headers.get("user-agent", ""),
+        )
+
+        return response
+
+
+class RateLimitMiddleware(BaseHTTPMiddleware):
+    """Simple in-memory rate limiting per IP."""
+
+    def __init__(self, app: FastAPI, requests_per_minute: int = 60):
+        super().__init__(app)
+        self.requests_per_minute = requests_per_minute
+        self.requests: dict[str, list[float]] = {}
+
+    async def dispatch(
+        self, request: Request, call_next: RequestResponseEndpoint
+    ) -> Response:
+        client_ip = request.client.host if request.client else "unknown"
+        now = time.time()
+        window_start = now - 60
+
+        # Clean old entries and check limit
+        self.requests.setdefault(client_ip, [])
+        self.requests[client_ip] = [
+            t for t in self.requests[client_ip] if t > window_start
+        ]
+
+        if len(self.requests[client_ip]) >= self.requests_per_minute:
+            return Response(
+                content='{"error": "Rate limit exceeded"}',
+                status_code=429,
+                headers={
+                    "Content-Type": "application/json",
+                    "Retry-After": "60",
+                    "X-RateLimit-Limit": str(self.requests_per_minute),
+                    "X-RateLimit-Remaining": "0",
+                },
+            )
+
+        self.requests[client_ip].append(now)
+        remaining = self.requests_per_minute - len(self.requests[client_ip])
+
+        response = await call_next(request)
+        response.headers["X-RateLimit-Limit"] = str(self.requests_per_minute)
+        response.headers["X-RateLimit-Remaining"] = str(remaining)
+        return response
+
+
+# Register middleware (order matters: last added = first executed)
+app.add_middleware(RateLimitMiddleware, requests_per_minute=100)
+app.add_middleware(RequestContextMiddleware)`,
+  usage: `from fastapi import Depends
+
+def get_request_id() -> str:
+    return request_id_var.get()
+
+@app.get("/api/users/{user_id}")
+async def get_user(user_id: str, request_id: str = Depends(get_request_id)):
+    # request_id is available via dependency injection
+    return {"user_id": user_id, "request_id": request_id}`,
+};
+
+## Overview
+
+Production middleware stack for FastAPI that handles cross-cutting concerns: request ID propagation for distributed tracing, response timing, structured logging with contextual data, and IP-based rate limiting. Uses `contextvars` for request-scoped data that flows through the entire call stack.
+
+## Code
+
+```python
+app.add_middleware(RateLimitMiddleware, requests_per_minute=100)
+app.add_middleware(RequestContextMiddleware)
+```
+
+## Notes
+
+- Middleware executes in reverse registration order (last added runs first)
+- `contextvars` provide thread-safe, async-safe request-scoped state without passing request objects
+- The `X-Request-ID` header enables distributed tracing across microservices
+- For production rate limiting, replace the dict with Redis for multi-instance support
+- `structlog` produces JSON logs compatible with DataDog, Splunk, and CloudWatch

@@ -1,0 +1,167 @@
+---
+title: "GKE Cluster Configuration"
+description: "Google Kubernetes Engine cluster with node pools, workload identity, network policies, and cluster autoscaling."
+category: "Terraform"
+language: "hcl"
+tags: ["terraform", "gcp", "gke", "kubernetes", "production-ready"]
+createdAt: "2025-03-25"
+updatedAt: "2025-04-10"
+---
+
+export const codeBlocks = {
+  main: `variable "project_id" { type = string }
+variable "region" { type = string; default = "us-central1" }
+variable "cluster_name" { type = string }
+variable "network" { type = string }
+variable "subnetwork" { type = string }
+variable "node_count" { type = number; default = 3 }
+
+resource "google_container_cluster" "primary" {
+  name     = var.cluster_name
+  location = var.region
+  project  = var.project_id
+
+  # Remove default node pool, use separately managed pools
+  remove_default_node_pool = true
+  initial_node_count       = 1
+
+  network    = var.network
+  subnetwork = var.subnetwork
+
+  # Private cluster
+  private_cluster_config {
+    enable_private_nodes    = true
+    enable_private_endpoint = false
+    master_ipv4_cidr_block  = "172.16.0.0/28"
+  }
+
+  # Workload Identity
+  workload_identity_config {
+    workload_pool = "\${var.project_id}.svc.id.goog"
+  }
+
+  # Network policy
+  network_policy {
+    enabled  = true
+    provider = "CALICO"
+  }
+
+  # Cluster autoscaling
+  cluster_autoscaling {
+    enabled = true
+    resource_limits {
+      resource_type = "cpu"
+      minimum       = 4
+      maximum       = 100
+    }
+    resource_limits {
+      resource_type = "memory"
+      minimum       = 16
+      maximum       = 400
+    }
+  }
+
+  # Maintenance window
+  maintenance_policy {
+    recurring_window {
+      start_time = "2025-01-01T04:00:00Z"
+      end_time   = "2025-01-01T08:00:00Z"
+      recurrence = "FREQ=WEEKLY;BYDAY=SA,SU"
+    }
+  }
+
+  # Release channel for auto-upgrades
+  release_channel {
+    channel = "REGULAR"
+  }
+}
+
+# General purpose node pool
+resource "google_container_node_pool" "general" {
+  name       = "general"
+  location   = var.region
+  cluster    = google_container_cluster.primary.name
+  node_count = var.node_count
+
+  autoscaling {
+    min_node_count = 2
+    max_node_count = 10
+  }
+
+  node_config {
+    machine_type = "e2-standard-4"
+    disk_size_gb = 100
+    disk_type    = "pd-ssd"
+
+    oauth_scopes = [
+      "https://www.googleapis.com/auth/cloud-platform"
+    ]
+
+    workload_metadata_config {
+      mode = "GKE_METADATA"
+    }
+
+    labels = {
+      pool = "general"
+    }
+
+    taint = []
+  }
+
+  management {
+    auto_repair  = true
+    auto_upgrade = true
+  }
+}
+
+# Spot instance node pool for batch workloads
+resource "google_container_node_pool" "spot" {
+  name     = "spot-batch"
+  location = var.region
+  cluster  = google_container_cluster.primary.name
+
+  autoscaling {
+    min_node_count = 0
+    max_node_count = 20
+  }
+
+  node_config {
+    machine_type = "e2-standard-8"
+    spot         = true
+    disk_size_gb = 50
+
+    labels = { pool = "spot" }
+    taint {
+      key    = "spot"
+      value  = "true"
+      effect = "NO_SCHEDULE"
+    }
+  }
+}
+
+output "cluster_endpoint" { value = google_container_cluster.primary.endpoint }
+output "cluster_name" { value = google_container_cluster.primary.name }`,
+};
+
+## Overview
+
+A production GKE cluster with private nodes, Workload Identity for secure GCP API access, network policies, cluster autoscaling, and separate node pools for general workloads and cost-optimized spot instances.
+
+## Code
+
+```hcl
+module "gke" {
+  source       = "./modules/gke"
+  project_id   = "my-project"
+  cluster_name = "production"
+  region       = "us-central1"
+}
+```
+
+## Notes
+
+- Private cluster nodes have no public IPs, reducing attack surface
+- Workload Identity maps Kubernetes service accounts to GCP service accounts (no key files)
+- Spot node pool with taints ensures only tolerant workloads (batch jobs) schedule there
+- Maintenance windows restrict auto-upgrades to weekends during low traffic
+- `REGULAR` release channel provides stable versions with security patches

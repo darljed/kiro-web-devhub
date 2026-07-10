@@ -1,0 +1,192 @@
+---
+title: "Custom useForm Hook"
+description: "A lightweight form management hook with field-level validation, touched tracking, and submit handling without external dependencies."
+category: "React"
+language: "typescript"
+tags: ["react", "hooks", "forms", "validation", "production-ready"]
+createdAt: "2025-01-28"
+updatedAt: "2025-02-15"
+---
+
+export const codeBlocks = {
+  main: `import { useState, useCallback, useRef, FormEvent } from "react";
+
+type ValidationRule<T> = (value: T[keyof T], values: T) => string | undefined;
+type ValidationRules<T> = Partial<Record<keyof T, ValidationRule<T>[]>>;
+
+interface UseFormOptions<T extends Record<string, unknown>> {
+  initialValues: T;
+  validate?: ValidationRules<T>;
+  onSubmit: (values: T) => void | Promise<void>;
+}
+
+interface FieldProps {
+  name: string;
+  value: unknown;
+  onChange: (e: React.ChangeEvent<HTMLInputElement | HTMLTextAreaElement | HTMLSelectElement>) => void;
+  onBlur: () => void;
+}
+
+export function useForm<T extends Record<string, unknown>>(options: UseFormOptions<T>) {
+  const { initialValues, validate, onSubmit } = options;
+  const [values, setValues] = useState<T>(initialValues);
+  const [errors, setErrors] = useState<Partial<Record<keyof T, string>>>({});
+  const [touched, setTouched] = useState<Partial<Record<keyof T, boolean>>>({});
+  const [isSubmitting, setIsSubmitting] = useState(false);
+  const [submitCount, setSubmitCount] = useState(0);
+  const initialValuesRef = useRef(initialValues);
+
+  const validateField = useCallback(
+    (name: keyof T, value: T[keyof T]): string | undefined => {
+      const rules = validate?.[name];
+      if (!rules) return undefined;
+      for (const rule of rules) {
+        const error = rule(value, values);
+        if (error) return error;
+      }
+      return undefined;
+    },
+    [validate, values]
+  );
+
+  const validateAll = useCallback((): boolean => {
+    const newErrors: Partial<Record<keyof T, string>> = {};
+    let valid = true;
+    for (const key of Object.keys(values) as (keyof T)[]) {
+      const error = validateField(key, values[key]);
+      if (error) {
+        newErrors[key] = error;
+        valid = false;
+      }
+    }
+    setErrors(newErrors);
+    return valid;
+  }, [values, validateField]);
+
+  const setFieldValue = useCallback(<K extends keyof T>(name: K, value: T[K]) => {
+    setValues((prev) => ({ ...prev, [name]: value }));
+    setErrors((prev) => ({ ...prev, [name]: undefined }));
+  }, []);
+
+  const getFieldProps = useCallback(
+    (name: keyof T): FieldProps => ({
+      name: name as string,
+      value: values[name],
+      onChange: (e) => {
+        setFieldValue(name, e.target.value as T[keyof T]);
+      },
+      onBlur: () => {
+        setTouched((prev) => ({ ...prev, [name]: true }));
+        const error = validateField(name, values[name]);
+        if (error) setErrors((prev) => ({ ...prev, [name]: error }));
+      },
+    }),
+    [values, setFieldValue, validateField]
+  );
+
+  const handleSubmit = useCallback(
+    async (e?: FormEvent) => {
+      e?.preventDefault();
+      setSubmitCount((c) => c + 1);
+      // Mark all fields as touched
+      const allTouched = Object.keys(values).reduce(
+        (acc, key) => ({ ...acc, [key]: true }),
+        {} as Record<keyof T, boolean>
+      );
+      setTouched(allTouched);
+
+      if (!validateAll()) return;
+
+      setIsSubmitting(true);
+      try {
+        await onSubmit(values);
+      } finally {
+        setIsSubmitting(false);
+      }
+    },
+    [values, validateAll, onSubmit]
+  );
+
+  const reset = useCallback(() => {
+    setValues(initialValuesRef.current);
+    setErrors({});
+    setTouched({});
+    setIsSubmitting(false);
+  }, []);
+
+  const isDirty = JSON.stringify(values) !== JSON.stringify(initialValuesRef.current);
+
+  return {
+    values,
+    errors,
+    touched,
+    isSubmitting,
+    isDirty,
+    submitCount,
+    setFieldValue,
+    getFieldProps,
+    handleSubmit,
+    validateAll,
+    reset,
+  };
+}
+
+// Validation helpers
+export const required = (msg = "Required"): ValidationRule<any> =>
+  (value) => (!value || (typeof value === "string" && !value.trim()) ? msg : undefined);
+
+export const minLength = (min: number, msg?: string): ValidationRule<any> =>
+  (value) => (typeof value === "string" && value.length < min ? msg ?? \`Minimum \${min} characters\` : undefined);
+
+export const email = (msg = "Invalid email"): ValidationRule<any> =>
+  (value) => (typeof value === "string" && !/^[^\\s@]+@[^\\s@]+\\.[^\\s@]+$/.test(value) ? msg : undefined);`,
+  usage: `function SignupForm() {
+  const form = useForm({
+    initialValues: { name: "", email: "", password: "" },
+    validate: {
+      name: [required(), minLength(2)],
+      email: [required(), email()],
+      password: [required(), minLength(8, "Password must be at least 8 characters")],
+    },
+    onSubmit: async (values) => {
+      await registerUser(values);
+    },
+  });
+
+  return (
+    <form onSubmit={form.handleSubmit} className="space-y-4">
+      <div>
+        <input {...form.getFieldProps("name")} placeholder="Name" />
+        {form.touched.name && form.errors.name && (
+          <span className="text-red-500 text-sm">{form.errors.name}</span>
+        )}
+      </div>
+      <button type="submit" disabled={form.isSubmitting}>
+        {form.isSubmitting ? "Signing up..." : "Sign Up"}
+      </button>
+    </form>
+  );
+}`,
+};
+
+## Overview
+
+A custom form hook that provides form state management, field-level validation on blur, touched tracking, and submit handling without depending on external libraries. Inspired by Formik's API but lighter weight.
+
+## Code
+
+```typescript
+const form = useForm({
+  initialValues: { email: "" },
+  validate: { email: [required(), email()] },
+  onSubmit: async (values) => { ... },
+});
+```
+
+## Notes
+
+- Validation runs on blur (not on every keystroke) for better UX
+- `getFieldProps` returns spread-ready props for input elements
+- `isDirty` detects unsaved changes for "Are you sure?" prompts
+- Validation rules are composable functions that return error strings or undefined
+- For complex forms with dynamic fields, consider Formik or React Hook Form instead

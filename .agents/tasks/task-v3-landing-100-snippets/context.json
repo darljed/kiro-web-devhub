@@ -1,0 +1,31 @@
+{
+  "project_type": "Next.js 16 App Router static site with MDX content",
+  "language": "TypeScript/React",
+  "build_system": "npm with Next.js build (uses --webpack flag due to Turbopack serialization limitation with rehype-pretty-code)",
+  "test_framework": "No test framework configured - validation via build and lint only",
+  "build_command": "npm run build",
+  "test_command": "npm run lint",
+  "verification_instructions": "1. Run npm run build to verify all pages statically generate. 2. Run npm run lint to check for lint errors. The build will fail if any MDX file has malformed frontmatter or codeBlocks exports.",
+  "snapshot_or_generated_files": null,
+  "setup_instructions": "npm install",
+  "environment_constraints": "OPEN_INTERNET network mode. Node.js available. No Docker needed.",
+  "contribution_requirements": "AGENTS.md says Next.js 16 has breaking changes from training data - read node_modules/next/dist/docs/ before writing code. Use responsive Tailwind CSS utility classes and semantic HTML for all layout sections (steering file requirement).",
+  "key_patterns": "Landing components use 'use client' directive, AnimateOnScroll for scroll animations, useMounted hook for initial animations. MDX snippets have YAML frontmatter (title, description, category, language, tags[], createdAt, updatedAt) + export const codeBlocks = { main: `...`, test?: `...`, usage?: `...` } + prose markdown with code blocks. lucide-react for icons. next-themes for dark/light. Tailwind v4 for styling.",
+  "relevant_files": [
+    "app/page.tsx",
+    "components/landing/HeroSection.tsx",
+    "components/landing/FeaturesSection.tsx",
+    "components/landing/StatsSection.tsx",
+    "components/landing/CTASection.tsx",
+    "components/landing/UseCasesSection.tsx",
+    "components/AnimateOnScroll.tsx",
+    "components/HeroIllustration.tsx",
+    "components/FeatureIllustrations.tsx",
+    "hooks/useMounted.ts",
+    "lib/snippets.ts",
+    "content/snippets/react-use-debounce.mdx",
+    "content/snippets/go-graceful-shutdown.mdx",
+    "content/snippets/splunk-error-aggregation.mdx"
+  ],
+  "directory_structure": "app/ - Next.js App Router pages (page.tsx, layout.tsx, snippets/). components/ - React components (landing/ for landing page sections). content/snippets/ - MDX snippet files (22 existing). lib/ - utility functions (snippets.ts). hooks/ - custom hooks. public/ - static assets."
+}

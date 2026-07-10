@@ -1,0 +1,166 @@
+---
+title: "DataLoader for N+1 Prevention"
+description: "DataLoader pattern for batching and caching database queries in GraphQL resolvers, preventing the N+1 query problem."
+category: "GraphQL"
+language: "typescript"
+tags: ["graphql", "dataloader", "n-plus-one", "performance", "production-ready"]
+createdAt: "2025-03-10"
+updatedAt: "2025-03-30"
+---
+
+export const codeBlocks = {
+  main: `import DataLoader from "dataloader";
+import { db } from "./database";
+
+// User loader: batches individual user lookups into one query
+export function createUserLoader() {
+  return new DataLoader<string, User | null>(async (userIds) => {
+    // Single query for all requested users
+    const users = await db.query(
+      "SELECT * FROM users WHERE id = ANY($1)",
+      [userIds]
+    );
+
+    // DataLoader requires results in the same order as input keys
+    const userMap = new Map(users.map((u) => [u.id, u]));
+    return userIds.map((id) => userMap.get(id) ?? null);
+  });
+}
+
+// Post loader with per-request caching
+export function createPostLoader() {
+  return new DataLoader<string, Post | null>(
+    async (postIds) => {
+      const posts = await db.query(
+        "SELECT * FROM posts WHERE id = ANY($1) AND deleted_at IS NULL",
+        [postIds]
+      );
+      const postMap = new Map(posts.map((p) => [p.id, p]));
+      return postIds.map((id) => postMap.get(id) ?? null);
+    },
+    {
+      // Custom cache key for complex inputs
+      cacheKeyFn: (key) => key.toString(),
+      // Batch scheduling: wait 10ms to collect more keys
+      batchScheduleFn: (callback) => setTimeout(callback, 10),
+      // Maximum batch size
+      maxBatchSize: 100,
+    }
+  );
+}
+
+// Loader for one-to-many relationships (posts by author)
+export function createPostsByAuthorLoader() {
+  return new DataLoader<string, Post[]>(async (authorIds) => {
+    const posts = await db.query(
+      "SELECT * FROM posts WHERE author_id = ANY($1) ORDER BY created_at DESC",
+      [authorIds]
+    );
+    const grouped = new Map<string, Post[]>();
+    for (const post of posts) {
+      const existing = grouped.get(post.author_id) ?? [];
+      existing.push(post);
+      grouped.set(post.author_id, existing);
+    }
+    return authorIds.map((id) => grouped.get(id) ?? []);
+  });
+}
+
+// Context factory: creates fresh loaders per request
+interface GraphQLContext {
+  loaders: {
+    user: DataLoader<string, User | null>;
+    post: DataLoader<string, Post | null>;
+    postsByAuthor: DataLoader<string, Post[]>;
+    commentsByPost: DataLoader<string, Comment[]>;
+  };
+  currentUser: User | null;
+}
+
+export function createContext(req: Request): GraphQLContext {
+  return {
+    loaders: {
+      user: createUserLoader(),
+      post: createPostLoader(),
+      postsByAuthor: createPostsByAuthorLoader(),
+      commentsByPost: createCommentsByPostLoader(),
+    },
+    currentUser: req.user ?? null,
+  };
+}
+
+// Resolvers using DataLoader
+const resolvers = {
+  Query: {
+    user: (_: unknown, { id }: { id: string }, ctx: GraphQLContext) =>
+      ctx.loaders.user.load(id),
+
+    posts: async (_: unknown, args: { authorId?: string }, ctx: GraphQLContext) => {
+      if (args.authorId) {
+        return ctx.loaders.postsByAuthor.load(args.authorId);
+      }
+      return db.query("SELECT * FROM posts ORDER BY created_at DESC LIMIT 20");
+    },
+  },
+
+  Post: {
+    // Each post.author call is batched into one query
+    author: (post: Post, _: unknown, ctx: GraphQLContext) =>
+      ctx.loaders.user.load(post.author_id),
+
+    comments: (post: Post, _: unknown, ctx: GraphQLContext) =>
+      ctx.loaders.commentsByPost.load(post.id),
+  },
+
+  Comment: {
+    author: (comment: Comment, _: unknown, ctx: GraphQLContext) =>
+      ctx.loaders.user.load(comment.author_id),
+  },
+};
+
+// Types
+interface User { id: string; name: string; email: string; }
+interface Post { id: string; title: string; author_id: string; }
+interface Comment { id: string; body: string; author_id: string; post_id: string; }
+
+function createCommentsByPostLoader() {
+  return new DataLoader<string, Comment[]>(async (postIds) => {
+    const comments = await db.query(
+      "SELECT * FROM comments WHERE post_id = ANY($1) ORDER BY created_at",
+      [postIds]
+    );
+    const grouped = new Map<string, Comment[]>();
+    for (const c of comments) {
+      const existing = grouped.get(c.post_id) ?? [];
+      existing.push(c);
+      grouped.set(c.post_id, existing);
+    }
+    return postIds.map((id) => grouped.get(id) ?? []);
+  });
+}`,
+};
+
+## Overview
+
+DataLoader solves the N+1 query problem in GraphQL by batching individual field resolver database calls into single bulk queries. Each request gets fresh loader instances that deduplicate and cache within that request's lifecycle.
+
+## Code
+
+```typescript
+// Instead of N individual queries:
+// SELECT * FROM users WHERE id = '1'
+// SELECT * FROM users WHERE id = '2'
+// ...
+
+// DataLoader batches into one:
+// SELECT * FROM users WHERE id = ANY(['1', '2', ...])
+```
+
+## Notes
+
+- Create new DataLoader instances per request to prevent data leaking between users
+- Results must be returned in the same order as the input keys array
+- Return `null` for missing items (not undefined) to maintain array alignment
+- `maxBatchSize` prevents excessively large IN queries from overwhelming the database
+- For one-to-many relationships, the batch function returns arrays grouped by parent ID
+- DataLoader caches within a single request; for cross-request caching, add Redis on top

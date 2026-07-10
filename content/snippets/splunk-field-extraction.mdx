@@ -1,0 +1,77 @@
+---
+title: "Field Extraction and Enrichment"
+description: "SPL patterns for extracting structured fields from unstructured logs, enriching events with lookup tables, and normalizing data."
+category: "Splunk"
+language: "spl"
+tags: ["splunk", "field-extraction", "regex", "lookup", "production-ready"]
+createdAt: "2025-04-10"
+updatedAt: "2025-04-25"
+---
+
+export const codeBlocks = {
+  main: `| Extract fields from unstructured log lines
+index=application sourcetype=app_logs
+| rex field=_raw "(?<log_level>INFO|WARN|ERROR|DEBUG)\\s+\\[(?<thread_name>[^\\]]+)\\]\\s+(?<logger>[^\\s]+)\\s+-\\s+(?<message>.*)"
+| rex field=message "request_id=(?<request_id>[a-f0-9-]+)"
+| rex field=message "duration=(?<duration_ms>\\d+)ms"
+| rex field=message "user=(?<user_id>[^\\s,]+)"
+| eval duration_ms=tonumber(duration_ms)
+| where isnotnull(duration_ms) AND duration_ms > 1000
+| stats avg(duration_ms) as avg_slow_ms, count as slow_count by logger, log_level
+
+| Multi-value field extraction (JSON arrays in logs)
+index=application sourcetype=json_events
+| spath output=error_codes path=errors{}
+| mvexpand error_codes
+| stats count by error_codes
+| sort - count
+| lookup error_code_descriptions.csv error_code as error_codes OUTPUT description, severity
+| table error_codes, description, severity, count
+
+| Enrichment with lookup tables
+index=application sourcetype=access_combined
+| lookup geo_ip_lookup.csv ip as clientip OUTPUT country, city, latitude, longitude
+| lookup service_owners.csv service_name OUTPUT team, oncall_email, tier
+| eval is_internal=if(cidrmatch("10.0.0.0/8", clientip) OR cidrmatch("172.16.0.0/12", clientip), "internal", "external")
+| stats count as requests, dc(clientip) as unique_ips by country, team, is_internal
+| sort - requests
+
+| Normalize inconsistent field formats
+index=application
+| eval normalized_status=case(
+    isnum(status), status,
+    status="OK" OR status="ok" OR status="Success", 200,
+    status="Not Found" OR status="404", 404,
+    status="Error" OR status="error" OR status="FAIL", 500,
+    1=1, 0
+)
+| eval normalized_time=case(
+    match(response_time, "^\\d+ms$"), tonumber(replace(response_time, "ms", "")),
+    match(response_time, "^\\d+\\.\\d+s$"), tonumber(replace(response_time, "s", "")) * 1000,
+    match(response_time, "^\\d+$"), tonumber(response_time),
+    1=1, null()
+)
+| where isnotnull(normalized_time)
+| timechart span=5m avg(normalized_time) as avg_ms by service_name`,
+};
+
+## Overview
+
+Patterns for extracting structured fields from unstructured logs using regex, enriching events with external lookup tables (CSV), and normalizing inconsistent field formats across different log sources into a unified schema.
+
+## Code
+
+```spl
+| rex field=_raw "duration=(?<duration_ms>\d+)ms"
+| lookup service_owners.csv service_name OUTPUT team, oncall_email
+| eval normalized_status=case(status="OK", 200, status="Error", 500)
+```
+
+## Notes
+
+- Named capture groups in `rex` create new searchable fields at search time
+- Use `spath` for JSON field extraction instead of regex (faster and more reliable)
+- Lookup tables (CSV files) enrich events with metadata not present in logs
+- `cidrmatch` identifies internal vs external traffic without maintaining IP lists
+- Field normalization with `case()` handles inconsistent formats from different services
+- Consider `REPORT` transforms in props.conf for high-volume extraction at index time

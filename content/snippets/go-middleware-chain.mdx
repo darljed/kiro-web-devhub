@@ -1,0 +1,231 @@
+---
+title: "HTTP Middleware Chain"
+description: "Composable middleware pattern for Go HTTP servers with logging, recovery, auth, rate limiting, and request ID propagation."
+category: "Go"
+language: "go"
+tags: ["go", "http", "middleware", "web", "production-ready"]
+createdAt: "2025-01-28"
+updatedAt: "2025-02-18"
+---
+
+export const codeBlocks = {
+  main: `package middleware
+
+import (
+	"context"
+	"fmt"
+	"log/slog"
+	"net/http"
+	"runtime/debug"
+	"strings"
+	"sync/atomic"
+	"time"
+
+	"github.com/google/uuid"
+)
+
+// Middleware is a function that wraps an http.Handler
+type Middleware func(http.Handler) http.Handler
+
+// Chain composes multiple middlewares into a single middleware
+func Chain(middlewares ...Middleware) Middleware {
+	return func(final http.Handler) http.Handler {
+		for i := len(middlewares) - 1; i >= 0; i-- {
+			final = middlewares[i](final)
+		}
+		return final
+	}
+}
+
+// RequestID injects a unique request ID into the context and response headers
+func RequestID(next http.Handler) http.Handler {
+	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		id := r.Header.Get("X-Request-ID")
+		if id == "" {
+			id = uuid.New().String()
+		}
+		ctx := context.WithValue(r.Context(), requestIDKey, id)
+		w.Header().Set("X-Request-ID", id)
+		next.ServeHTTP(w, r.WithContext(ctx))
+	})
+}
+
+// Logger logs request method, path, status, and duration
+func Logger(logger *slog.Logger) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			start := time.Now()
+			wrapped := &responseWriter{ResponseWriter: w, statusCode: http.StatusOK}
+
+			next.ServeHTTP(wrapped, r)
+
+			duration := time.Since(start)
+			logger.Info("request",
+				"method", r.Method,
+				"path", r.URL.Path,
+				"status", wrapped.statusCode,
+				"duration_ms", duration.Milliseconds(),
+				"request_id", GetRequestID(r.Context()),
+				"remote_addr", r.RemoteAddr,
+			)
+		})
+	}
+}
+
+// Recover catches panics and returns 500 instead of crashing
+func Recover(logger *slog.Logger) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			defer func() {
+				if err := recover(); err != nil {
+					stack := debug.Stack()
+					logger.Error("panic recovered",
+						"error", err,
+						"stack", string(stack),
+						"request_id", GetRequestID(r.Context()),
+					)
+					http.Error(w, "Internal Server Error", http.StatusInternalServerError)
+				}
+			}()
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// Auth validates Bearer tokens and injects user into context
+func Auth(validate func(token string) (*User, error)) Middleware {
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			header := r.Header.Get("Authorization")
+			if !strings.HasPrefix(header, "Bearer ") {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			token := strings.TrimPrefix(header, "Bearer ")
+			user, err := validate(token)
+			if err != nil {
+				http.Error(w, "Unauthorized", http.StatusUnauthorized)
+				return
+			}
+			ctx := context.WithValue(r.Context(), userKey, user)
+			next.ServeHTTP(w, r.WithContext(ctx))
+		})
+	}
+}
+
+// RateLimit limits requests per IP using a simple counter
+func RateLimit(requestsPerMinute int) Middleware {
+	type client struct {
+		count    int64
+		resetAt  time.Time
+	}
+	clients := make(map[string]*client)
+	var mu sync.Mutex
+
+	return func(next http.Handler) http.Handler {
+		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			ip := r.RemoteAddr
+			mu.Lock()
+			c, exists := clients[ip]
+			now := time.Now()
+			if !exists || now.After(c.resetAt) {
+				c = &client{count: 0, resetAt: now.Add(time.Minute)}
+				clients[ip] = c
+			}
+			c.count++
+			count := c.count
+			mu.Unlock()
+
+			if count > int64(requestsPerMinute) {
+				w.Header().Set("Retry-After", "60")
+				http.Error(w, "Too Many Requests", http.StatusTooManyRequests)
+				return
+			}
+			next.ServeHTTP(w, r)
+		})
+	}
+}
+
+// Helper types and functions
+type contextKey string
+
+const (
+	requestIDKey contextKey = "request_id"
+	userKey      contextKey = "user"
+)
+
+type User struct {
+	ID    string
+	Email string
+	Roles []string
+}
+
+func GetRequestID(ctx context.Context) string {
+	if id, ok := ctx.Value(requestIDKey).(string); ok {
+		return id
+	}
+	return ""
+}
+
+func GetUser(ctx context.Context) *User {
+	if user, ok := ctx.Value(userKey).(*User); ok {
+		return user
+	}
+	return nil
+}
+
+type responseWriter struct {
+	http.ResponseWriter
+	statusCode int
+}
+
+func (rw *responseWriter) WriteHeader(code int) {
+	rw.statusCode = code
+	rw.ResponseWriter.WriteHeader(code)
+}`,
+  usage: `func main() {
+    logger := slog.Default()
+
+    // Compose middleware stack
+    stack := middleware.Chain(
+        middleware.RequestID,
+        middleware.Logger(logger),
+        middleware.Recover(logger),
+        middleware.RateLimit(100),
+    )
+
+    // Protected routes with auth
+    authStack := middleware.Chain(
+        middleware.Auth(validateJWT),
+    )
+
+    mux := http.NewServeMux()
+    mux.Handle("/api/public", stack(publicHandler))
+    mux.Handle("/api/private", stack(authStack(privateHandler)))
+
+    http.ListenAndServe(":8080", mux)
+}`,
+};
+
+## Overview
+
+A composable middleware system for Go HTTP servers. Middlewares wrap handlers in an onion pattern, with each layer able to inspect/modify requests before and responses after the next handler executes.
+
+## Code
+
+```go
+stack := middleware.Chain(
+    middleware.RequestID,
+    middleware.Logger(logger),
+    middleware.Recover(logger),
+)
+http.Handle("/", stack(myHandler))
+```
+
+## Notes
+
+- `Chain` applies middlewares left-to-right (first in the list runs first)
+- The wrapped `responseWriter` captures the status code for logging
+- Panic recovery prevents one bad request from crashing the entire server
+- Request IDs propagate through context for distributed tracing correlation
+- Rate limiting by IP is simple but not production-grade (use Redis for distributed deployments)

@@ -1,0 +1,230 @@
+---
+title: "Worker Thread Pool"
+description: "A managed pool of Node.js worker threads with task queuing, error recovery, and automatic scaling for CPU-intensive operations."
+category: "TypeScript"
+language: "typescript"
+tags: ["typescript", "nodejs", "worker-threads", "concurrency", "production-ready"]
+createdAt: "2025-02-05"
+updatedAt: "2025-02-25"
+---
+
+export const codeBlocks = {
+  main: `import { Worker } from "node:worker_threads";
+import { cpus } from "node:os";
+import { EventEmitter } from "node:events";
+
+interface Task<TInput = unknown, TOutput = unknown> {
+  id: string;
+  input: TInput;
+  resolve: (value: TOutput) => void;
+  reject: (error: Error) => void;
+}
+
+interface PoolOptions {
+  workerScript: string;
+  minThreads?: number;
+  maxThreads?: number;
+  idleTimeoutMs?: number;
+  taskTimeoutMs?: number;
+}
+
+export class WorkerPool extends EventEmitter {
+  private workers: Map<Worker, boolean> = new Map(); // worker -> busy
+  private queue: Task[] = [];
+  private readonly minThreads: number;
+  private readonly maxThreads: number;
+  private readonly idleTimeoutMs: number;
+  private readonly taskTimeoutMs: number;
+  private readonly workerScript: string;
+  private activeTasks = 0;
+  private isShuttingDown = false;
+
+  constructor(options: PoolOptions) {
+    super();
+    this.workerScript = options.workerScript;
+    this.minThreads = options.minThreads ?? 2;
+    this.maxThreads = options.maxThreads ?? cpus().length;
+    this.idleTimeoutMs = options.idleTimeoutMs ?? 30_000;
+    this.taskTimeoutMs = options.taskTimeoutMs ?? 60_000;
+
+    // Pre-spawn minimum workers
+    for (let i = 0; i < this.minThreads; i++) {
+      this.spawnWorker();
+    }
+  }
+
+  async execute<TInput, TOutput>(input: TInput): Promise<TOutput> {
+    if (this.isShuttingDown) {
+      throw new Error("Pool is shutting down");
+    }
+
+    return new Promise<TOutput>((resolve, reject) => {
+      const task: Task<TInput, TOutput> = {
+        id: crypto.randomUUID(),
+        input,
+        resolve,
+        reject,
+      };
+
+      this.queue.push(task as Task);
+      this.processQueue();
+    });
+  }
+
+  private processQueue(): void {
+    if (this.queue.length === 0) return;
+
+    // Find an idle worker
+    for (const [worker, busy] of this.workers) {
+      if (!busy && this.queue.length > 0) {
+        const task = this.queue.shift()!;
+        this.runTask(worker, task);
+        return;
+      }
+    }
+
+    // Scale up if possible
+    if (this.workers.size < this.maxThreads && this.queue.length > 0) {
+      const worker = this.spawnWorker();
+      const task = this.queue.shift()!;
+      this.runTask(worker, task);
+    }
+  }
+
+  private runTask(worker: Worker, task: Task): void {
+    this.workers.set(worker, true);
+    this.activeTasks++;
+
+    const timeout = setTimeout(() => {
+      worker.terminate();
+      this.workers.delete(worker);
+      this.activeTasks--;
+      task.reject(new Error(\`Task \${task.id} timed out after \${this.taskTimeoutMs}ms\`));
+      this.spawnWorker();
+      this.processQueue();
+    }, this.taskTimeoutMs);
+
+    const onMessage = (result: unknown) => {
+      clearTimeout(timeout);
+      this.workers.set(worker, false);
+      this.activeTasks--;
+      task.resolve(result as never);
+      this.emit("taskComplete", task.id);
+      this.processQueue();
+      this.scheduleIdleCheck(worker);
+    };
+
+    const onError = (error: Error) => {
+      clearTimeout(timeout);
+      this.workers.set(worker, false);
+      this.activeTasks--;
+      task.reject(error);
+      this.emit("taskError", task.id, error);
+      this.processQueue();
+    };
+
+    worker.once("message", onMessage);
+    worker.once("error", onError);
+    worker.postMessage(task.input);
+  }
+
+  private spawnWorker(): Worker {
+    const worker = new Worker(this.workerScript);
+    this.workers.set(worker, false);
+
+    worker.on("exit", (code) => {
+      this.workers.delete(worker);
+      if (!this.isShuttingDown && this.workers.size < this.minThreads) {
+        this.spawnWorker();
+      }
+      if (code !== 0) {
+        this.emit("workerExit", code);
+      }
+    });
+
+    return worker;
+  }
+
+  private scheduleIdleCheck(worker: Worker): void {
+    setTimeout(() => {
+      if (
+        !this.workers.get(worker) &&
+        this.workers.size > this.minThreads &&
+        this.queue.length === 0
+      ) {
+        worker.terminate();
+        this.workers.delete(worker);
+      }
+    }, this.idleTimeoutMs);
+  }
+
+  async shutdown(): Promise<void> {
+    this.isShuttingDown = true;
+    // Reject pending tasks
+    for (const task of this.queue) {
+      task.reject(new Error("Pool shutting down"));
+    }
+    this.queue = [];
+    // Terminate all workers
+    const terminations = [...this.workers.keys()].map((w) => w.terminate());
+    await Promise.all(terminations);
+    this.workers.clear();
+  }
+
+  get stats() {
+    return {
+      totalWorkers: this.workers.size,
+      busyWorkers: this.activeTasks,
+      queuedTasks: this.queue.length,
+    };
+  }
+}`,
+  usage: `// worker-script.ts (the worker file)
+import { parentPort } from "node:worker_threads";
+parentPort?.on("message", (data: { buffer: ArrayBuffer }) => {
+  // CPU-intensive work (e.g., image processing, hashing)
+  const result = heavyComputation(data.buffer);
+  parentPort?.postMessage(result);
+});
+
+// main.ts
+const pool = new WorkerPool({
+  workerScript: "./worker-script.js",
+  minThreads: 2,
+  maxThreads: 8,
+  taskTimeoutMs: 30_000,
+});
+
+const results = await Promise.all(
+  files.map((file) => pool.execute({ buffer: file }))
+);
+
+await pool.shutdown();`,
+};
+
+## Overview
+
+A managed worker thread pool that distributes CPU-intensive tasks across multiple threads with automatic scaling, task queuing, timeout handling, and graceful shutdown. This keeps the main event loop responsive while processing heavy workloads.
+
+## Code
+
+```typescript
+const pool = new WorkerPool({
+  workerScript: "./worker-script.js",
+  minThreads: 2,
+  maxThreads: cpus().length,
+  taskTimeoutMs: 30_000,
+});
+
+// Execute returns a promise that resolves with the worker's result
+const result = await pool.execute(inputData);
+```
+
+## Notes
+
+- Workers that exceed `taskTimeoutMs` are terminated and replaced automatically
+- The pool scales between `minThreads` and `maxThreads` based on queue pressure
+- Idle workers above `minThreads` are terminated after `idleTimeoutMs`
+- Use `SharedArrayBuffer` for zero-copy data transfer between threads
+- Worker scripts must use `parentPort.on("message")` and `parentPort.postMessage()`
+- Call `shutdown()` during process exit to cleanly terminate all workers

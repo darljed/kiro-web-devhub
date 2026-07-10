@@ -1,0 +1,168 @@
+---
+title: "GCP Cloud Run Service"
+description: "Terraform configuration for deploying a containerized service on Google Cloud Run with custom domain, VPC connector, and autoscaling."
+category: "Terraform"
+language: "hcl"
+tags: ["terraform", "gcp", "cloud-run", "serverless", "production-ready"]
+createdAt: "2025-04-25"
+updatedAt: "2025-05-10"
+---
+
+export const codeBlocks = {
+  main: `variable "project_id" { type = string }
+variable "region" { type = string; default = "us-central1" }
+variable "service_name" { type = string }
+variable "image" { type = string }
+variable "env_vars" { type = map(string); default = {} }
+variable "secrets" { type = map(string); default = {} }
+variable "min_instances" { type = number; default = 0 }
+variable "max_instances" { type = number; default = 100 }
+variable "vpc_connector" { type = string; default = "" }
+
+resource "google_cloud_run_v2_service" "this" {
+  name     = var.service_name
+  location = var.region
+  project  = var.project_id
+
+  template {
+    scaling {
+      min_instance_count = var.min_instances
+      max_instance_count = var.max_instances
+    }
+
+    dynamic "vpc_access" {
+      for_each = var.vpc_connector != "" ? [1] : []
+      content {
+        connector = var.vpc_connector
+        egress    = "PRIVATE_RANGES_ONLY"
+      }
+    }
+
+    containers {
+      image = var.image
+
+      resources {
+        limits = {
+          cpu    = "2"
+          memory = "1Gi"
+        }
+        cpu_idle          = true
+        startup_cpu_boost = true
+      }
+
+      ports {
+        container_port = 8080
+      }
+
+      dynamic "env" {
+        for_each = var.env_vars
+        content {
+          name  = env.key
+          value = env.value
+        }
+      }
+
+      dynamic "env" {
+        for_each = var.secrets
+        content {
+          name = env.key
+          value_source {
+            secret_key_ref {
+              secret  = env.value
+              version = "latest"
+            }
+          }
+        }
+      }
+
+      startup_probe {
+        http_get {
+          path = "/healthz"
+          port = 8080
+        }
+        initial_delay_seconds = 5
+        period_seconds        = 10
+        failure_threshold     = 3
+      }
+
+      liveness_probe {
+        http_get {
+          path = "/healthz"
+          port = 8080
+        }
+        period_seconds    = 30
+        failure_threshold = 3
+      }
+    }
+
+    service_account = google_service_account.this.email
+  }
+
+  traffic {
+    type    = "TRAFFIC_TARGET_ALLOCATION_TYPE_LATEST"
+    percent = 100
+  }
+}
+
+# Service Account with minimal permissions
+resource "google_service_account" "this" {
+  account_id   = var.service_name
+  display_name = "Cloud Run: \${var.service_name}"
+  project      = var.project_id
+}
+
+# Allow public access
+resource "google_cloud_run_v2_service_iam_member" "public" {
+  project  = var.project_id
+  location = var.region
+  name     = google_cloud_run_v2_service.this.name
+  role     = "roles/run.invoker"
+  member   = "allUsers"
+}
+
+# Custom domain mapping
+resource "google_cloud_run_domain_mapping" "this" {
+  count    = var.custom_domain != "" ? 1 : 0
+  location = var.region
+  name     = var.custom_domain
+  project  = var.project_id
+
+  metadata {
+    namespace = var.project_id
+  }
+
+  spec {
+    route_name = google_cloud_run_v2_service.this.name
+  }
+}
+
+variable "custom_domain" { type = string; default = "" }
+
+output "url" { value = google_cloud_run_v2_service.this.uri }
+output "service_account" { value = google_service_account.this.email }`,
+};
+
+## Overview
+
+A production Cloud Run service with VPC connectivity for private database access, Secret Manager integration, health probes, startup CPU boost for cold starts, and custom domain mapping.
+
+## Code
+
+```hcl
+module "api" {
+  source       = "./modules/cloud-run"
+  service_name = "api"
+  image        = "gcr.io/project/api:v1.0"
+  min_instances = 1
+  env_vars     = { DB_HOST = "10.0.0.5" }
+  secrets      = { DB_PASSWORD = "db-password-secret" }
+}
+```
+
+## Notes
+
+- `min_instances = 0` enables scale-to-zero (cost saving); set > 0 for low-latency requirements
+- `cpu_idle = true` throttles CPU between requests (cheaper but adds latency)
+- `startup_cpu_boost` allocates extra CPU during cold start for faster initialization
+- VPC connector enables access to Cloud SQL, Memorystore, and other VPC resources
+- Secret Manager integration avoids passing secrets as plain environment variables

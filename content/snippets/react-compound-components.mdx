@@ -1,0 +1,169 @@
+---
+title: "Compound Components Pattern"
+description: "A React pattern for building flexible, implicitly shared-state component APIs like Tabs, Accordion, and Select using context."
+category: "React"
+language: "typescript"
+tags: ["react", "patterns", "compound-components", "composition", "production-ready"]
+createdAt: "2025-02-12"
+updatedAt: "2025-03-01"
+---
+
+export const codeBlocks = {
+  main: `import { createContext, useContext, useState, useCallback, Children, ReactNode } from "react";
+
+// Accordion compound component
+interface AccordionContextValue {
+  openItems: Set<string>;
+  toggle: (id: string) => void;
+  multiple: boolean;
+}
+
+const AccordionContext = createContext<AccordionContextValue | null>(null);
+
+function useAccordionContext() {
+  const context = useContext(AccordionContext);
+  if (!context) {
+    throw new Error("Accordion components must be used within an Accordion");
+  }
+  return context;
+}
+
+interface AccordionProps {
+  children: ReactNode;
+  multiple?: boolean;
+  defaultOpen?: string[];
+  onChange?: (openItems: string[]) => void;
+}
+
+export function Accordion({ children, multiple = false, defaultOpen = [], onChange }: AccordionProps) {
+  const [openItems, setOpenItems] = useState<Set<string>>(new Set(defaultOpen));
+
+  const toggle = useCallback((id: string) => {
+    setOpenItems((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) {
+        next.delete(id);
+      } else {
+        if (!multiple) next.clear();
+        next.add(id);
+      }
+      onChange?.([...next]);
+      return next;
+    });
+  }, [multiple, onChange]);
+
+  return (
+    <AccordionContext.Provider value={{ openItems, toggle, multiple }}>
+      <div role="region">{children}</div>
+    </AccordionContext.Provider>
+  );
+}
+
+interface AccordionItemProps {
+  id: string;
+  children: ReactNode;
+}
+
+function AccordionItem({ id, children }: AccordionItemProps) {
+  const { openItems } = useAccordionContext();
+  const isOpen = openItems.has(id);
+
+  return (
+    <div data-state={isOpen ? "open" : "closed"}>
+      {children}
+    </div>
+  );
+}
+
+interface AccordionTriggerProps {
+  id: string;
+  children: ReactNode;
+  className?: string;
+}
+
+function AccordionTrigger({ id, children, className }: AccordionTriggerProps) {
+  const { openItems, toggle } = useAccordionContext();
+  const isOpen = openItems.has(id);
+
+  return (
+    <button
+      className={className}
+      onClick={() => toggle(id)}
+      aria-expanded={isOpen}
+      aria-controls={\`accordion-content-\${id}\`}
+    >
+      {children}
+    </button>
+  );
+}
+
+interface AccordionContentProps {
+  id: string;
+  children: ReactNode;
+  className?: string;
+}
+
+function AccordionContent({ id, children, className }: AccordionContentProps) {
+  const { openItems } = useAccordionContext();
+  const isOpen = openItems.has(id);
+
+  if (!isOpen) return null;
+
+  return (
+    <div
+      id={\`accordion-content-\${id}\`}
+      role="region"
+      className={className}
+    >
+      {children}
+    </div>
+  );
+}
+
+// Attach sub-components
+Accordion.Item = AccordionItem;
+Accordion.Trigger = AccordionTrigger;
+Accordion.Content = AccordionContent;`,
+  usage: `<Accordion multiple defaultOpen={["faq-1"]} onChange={(items) => console.log(items)}>
+  <Accordion.Item id="faq-1">
+    <Accordion.Trigger id="faq-1" className="flex justify-between w-full p-4">
+      What is your refund policy?
+    </Accordion.Trigger>
+    <Accordion.Content id="faq-1" className="p-4 text-gray-600">
+      Full refund within 30 days of purchase.
+    </Accordion.Content>
+  </Accordion.Item>
+
+  <Accordion.Item id="faq-2">
+    <Accordion.Trigger id="faq-2" className="flex justify-between w-full p-4">
+      Do you offer team plans?
+    </Accordion.Trigger>
+    <Accordion.Content id="faq-2" className="p-4 text-gray-600">
+      Yes, starting at 5 seats with volume discounts.
+    </Accordion.Content>
+  </Accordion.Item>
+</Accordion>`,
+};
+
+## Overview
+
+The compound component pattern provides a declarative, flexible API where parent and child components share implicit state through React context. This enables consumers to compose components freely while the parent manages coordination logic internally.
+
+## Code
+
+```tsx
+<Accordion multiple>
+  <Accordion.Item id="1">
+    <Accordion.Trigger id="1">Title</Accordion.Trigger>
+    <Accordion.Content id="1">Content</Accordion.Content>
+  </Accordion.Item>
+</Accordion>
+```
+
+## Notes
+
+- Context ensures sub-components throw helpful errors when used outside their parent
+- The `multiple` prop controls whether multiple items can be open simultaneously
+- ARIA attributes (`aria-expanded`, `aria-controls`, `role`) ensure accessibility
+- Attach sub-components as static properties for a clean dot-notation API
+- This pattern is used by Radix UI, Headless UI, and Reach UI

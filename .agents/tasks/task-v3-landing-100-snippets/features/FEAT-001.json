@@ -1,0 +1,38 @@
+{
+  "id": "FEAT-001",
+  "type": "feat",
+  "description": "Add 100 new MDX snippet files to content/snippets/ distributed across 12 categories. Each snippet must have YAML frontmatter + codeBlocks export + prose following the existing format exactly.",
+  "status": "in_progress",
+  "steps": [
+    "Study the existing snippet format from content/snippets/react-use-debounce.mdx, go-graceful-shutdown.mdx, and splunk-error-aggregation.mdx as reference patterns",
+    "Create 15 TypeScript/JavaScript snippets: utility functions (deep-clone, type-guards, retry-with-backoff, etc.), design patterns (singleton, observer, builder), Node.js patterns (stream-pipeline, worker-threads, event-emitter-typed)",
+    "Create 12 React/Next.js snippets: hooks (useLocalStorage, useIntersectionObserver, useMediaQuery), patterns (compound-components, render-props, error-boundary), server components (RSC data-fetching, streaming-suspense, server-actions-validation)",
+    "Create 12 Python snippets: data processing (pandas-pivot, csv-streaming), FastAPI (dependency-injection, middleware, background-tasks), decorators (cache, timing, retry), async patterns (gather-with-errors, semaphore-rate-limit, async-context-manager)",
+    "Create 10 Go snippets: concurrency (worker-pool, fan-out-fan-in, pipeline), HTTP (middleware-chain, request-validation), CLI (cobra-subcommands, progress-bar), error handling (custom-errors, error-wrapping)",
+    "Create 8 Rust snippets: error handling (thiserror-custom, anyhow-context), async (tokio-select, async-stream), CLI (clap-derive), memory (arc-mutex-shared-state, cow-optimization, zero-copy-parsing)",
+    "Create 8 Splunk SPL snippets: monitoring (service-health-dashboard, anomaly-detection), alerting (threshold-alerts, correlation-search), dashboards (timechart-overlay, transaction-analysis, field-extraction, lookup-enrichment)",
+    "Create 8 Bash/Shell snippets: automation (parallel-execution, file-watcher, log-parser), CI/CD (docker-build-push, github-actions-matrix), system administration (disk-monitor, service-health-check, backup-rotation)",
+    "Create 8 Docker/Kubernetes snippets: deployments (blue-green, canary, horizontal-pod-autoscaler), configs (multi-stage-docker, init-containers, configmap-secrets), health checks (liveness-readiness-probes, pod-disruption-budget)",
+    "Create 7 Terraform/IaC snippets: AWS (vpc-module, ecs-fargate, lambda-api-gateway), GCP (gke-cluster, cloud-run), modules (reusable-module-pattern), state management (remote-state-locking)",
+    "Create 6 SQL snippets: complex queries (recursive-cte, pivot-unpivot), CTEs (materialized-cte), window functions (running-total, lag-lead-analysis), optimization (index-strategy-query)",
+    "Create 3 Redis snippets: caching (cache-aside-pattern, write-through-cache), pub/sub (event-bus), distributed locks (redlock-implementation)",
+    "Create 3 GraphQL snippets: schemas (union-types-interface), resolvers (dataloader-batching), subscriptions (real-time-updates)",
+    "Ensure all filenames follow kebab-case pattern like existing files (e.g., typescript-deep-clone.mdx, python-fastapi-middleware.mdx)",
+    "Ensure all dates use format YYYY-MM-DD and are set to 2025-01-xx through 2025-06-xx range",
+    "Each codeBlocks.main must contain real, production-quality code (not placeholder/toy code)"
+  ],
+  "acceptance_criteria": [
+    "Exactly 100 new .mdx files exist in content/snippets/ (122 total)",
+    "Each file has valid YAML frontmatter with all required fields: title, description, category, language, tags[], createdAt, updatedAt",
+    "Each file exports a codeBlocks object with at least a main key containing substantive code",
+    "Each file has prose content explaining when/why to use the pattern",
+    "Distribution matches: 15 TypeScript/JS, 12 React/Next.js, 12 Python, 10 Go, 8 Rust, 8 Splunk, 8 Bash, 8 Docker/K8s, 7 Terraform, 6 SQL, 3 Redis, 3 GraphQL",
+    "npm run build succeeds with all 122 snippets generating static pages"
+  ],
+  "verification": [
+    "Run: ls content/snippets/*.mdx | wc -l (expect 122)",
+    "Run: npm run build (must pass - all pages must statically generate)"
+  ],
+  "blocked_reason": null,
+  "findings": ""
+}

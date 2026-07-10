@@ -1,0 +1,140 @@
+---
+title: "Runtime Schema Validation with Zod"
+description: "Type-safe runtime validation patterns using Zod for API request/response validation with automatic TypeScript type inference."
+category: "TypeScript"
+language: "typescript"
+tags: ["typescript", "validation", "zod", "api", "production-ready"]
+createdAt: "2025-02-20"
+updatedAt: "2025-03-15"
+---
+
+export const codeBlocks = {
+  main: `import { z } from "zod";
+
+// Define schemas with runtime validation and static type inference
+const AddressSchema = z.object({
+  street: z.string().min(1),
+  city: z.string().min(1),
+  state: z.string().length(2),
+  zipCode: z.string().regex(/^\\d{5}(-\\d{4})?$/),
+  country: z.string().default("US"),
+});
+
+const UserSchema = z.object({
+  id: z.string().uuid(),
+  email: z.string().email(),
+  name: z.string().min(2).max(100),
+  age: z.number().int().min(13).max(150).optional(),
+  role: z.enum(["admin", "user", "moderator"]),
+  preferences: z.object({
+    theme: z.enum(["light", "dark", "system"]).default("system"),
+    notifications: z.boolean().default(true),
+    language: z.string().default("en"),
+  }),
+  addresses: z.array(AddressSchema).max(5),
+  createdAt: z.string().datetime(),
+  metadata: z.record(z.string(), z.unknown()).optional(),
+});
+
+// Infer TypeScript types from schemas
+type User = z.infer<typeof UserSchema>;
+type Address = z.infer<typeof AddressSchema>;
+
+// Create partial schema for updates (all fields optional)
+const UserUpdateSchema = UserSchema.partial().omit({ id: true, createdAt: true });
+type UserUpdate = z.infer<typeof UserUpdateSchema>;
+
+// Validation with detailed error formatting
+function validateRequest<T>(schema: z.ZodSchema<T>, data: unknown): {
+  success: true; data: T;
+} | {
+  success: false; errors: { path: string; message: string }[];
+} {
+  const result = schema.safeParse(data);
+  if (result.success) {
+    return { success: true, data: result.data };
+  }
+  return {
+    success: false,
+    errors: result.error.issues.map((issue) => ({
+      path: issue.path.join("."),
+      message: issue.message,
+    })),
+  };
+}
+
+// API route handler with validation
+async function handleCreateUser(requestBody: unknown) {
+  const validation = validateRequest(UserSchema, requestBody);
+  if (!validation.success) {
+    return { status: 400, body: { errors: validation.errors } };
+  }
+  // validation.data is fully typed as User
+  const user = validation.data;
+  return { status: 201, body: { id: user.id, email: user.email } };
+}
+
+// Composable schemas with transformations
+const PaginationSchema = z.object({
+  page: z.coerce.number().int().min(1).default(1),
+  limit: z.coerce.number().int().min(1).max(100).default(20),
+  sort: z.string().optional(),
+  order: z.enum(["asc", "desc"]).default("desc"),
+}).transform((data) => ({
+  ...data,
+  offset: (data.page - 1) * data.limit,
+}));
+
+type PaginationParams = z.infer<typeof PaginationSchema>;`,
+  usage: `// In an API handler
+export async function POST(request: Request) {
+  const body = await request.json();
+  const result = UserSchema.safeParse(body);
+
+  if (!result.success) {
+    return Response.json(
+      { errors: result.error.flatten().fieldErrors },
+      { status: 400 }
+    );
+  }
+
+  const user = await createUser(result.data);
+  return Response.json(user, { status: 201 });
+}
+
+// Query parameter validation
+const params = PaginationSchema.parse({
+  page: searchParams.get("page"),
+  limit: searchParams.get("limit"),
+});
+// params.offset is automatically calculated`,
+};
+
+## Overview
+
+Runtime schema validation using Zod that generates TypeScript types from schemas, eliminating the need to maintain separate type definitions and validation logic. Schemas serve as the single source of truth for both compile-time types and runtime validation.
+
+## Code
+
+```typescript
+const UserSchema = z.object({
+  email: z.string().email(),
+  name: z.string().min(2).max(100),
+  role: z.enum(["admin", "user", "moderator"]),
+});
+
+type User = z.infer<typeof UserSchema>;
+
+const result = UserSchema.safeParse(requestBody);
+if (!result.success) {
+  return { errors: result.error.flatten().fieldErrors };
+}
+```
+
+## Notes
+
+- `z.infer` derives TypeScript types from schemas, keeping types and validation in sync
+- `safeParse` returns a discriminated union instead of throwing, integrating well with Result patterns
+- `.partial()` creates update schemas where all fields are optional
+- `.transform()` adds computed fields after validation (like offset from page/limit)
+- `z.coerce` handles string-to-number conversion from query parameters automatically

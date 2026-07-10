@@ -1,0 +1,218 @@
+---
+title: "Context Patterns"
+description: "Production patterns for Go context usage including timeouts, cancellation propagation, value passing, and graceful shutdown coordination."
+category: "Go"
+language: "go"
+tags: ["go", "context", "concurrency", "cancellation", "production-ready"]
+createdAt: "2025-04-10"
+updatedAt: "2025-04-25"
+---
+
+export const codeBlocks = {
+  main: `package main
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"log"
+	"net/http"
+	"os"
+	"os/signal"
+	"sync"
+	"syscall"
+	"time"
+)
+
+// Pattern 1: Graceful shutdown with context
+func runWithGracefulShutdown(serverFn func(ctx context.Context) error) error {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Listen for OS signals
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
+
+	errCh := make(chan error, 1)
+	go func() {
+		errCh <- serverFn(ctx)
+	}()
+
+	select {
+	case sig := <-sigCh:
+		log.Printf("Received signal %v, shutting down...", sig)
+		cancel()
+		// Wait for server to finish with timeout
+		shutdownCtx, shutdownCancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer shutdownCancel()
+		select {
+		case err := <-errCh:
+			return err
+		case <-shutdownCtx.Done():
+			return errors.New("shutdown timed out")
+		}
+	case err := <-errCh:
+		return err
+	}
+}
+
+// Pattern 2: Context-aware retry with backoff
+func retryWithContext[T any](
+	ctx context.Context,
+	maxAttempts int,
+	baseDelay time.Duration,
+	fn func(ctx context.Context) (T, error),
+) (T, error) {
+	var lastErr error
+	var zero T
+	for attempt := 0; attempt < maxAttempts; attempt++ {
+		result, err := fn(ctx)
+		if err == nil {
+			return result, nil
+		}
+		lastErr = err
+
+		// Don't retry on context cancellation
+		if ctx.Err() != nil {
+			return zero, ctx.Err()
+		}
+
+		// Exponential backoff
+		delay := baseDelay * (1 << attempt)
+		select {
+		case <-ctx.Done():
+			return zero, ctx.Err()
+		case <-time.After(delay):
+		}
+	}
+	return zero, fmt.Errorf("failed after %d attempts: %w", maxAttempts, lastErr)
+}
+
+// Pattern 3: Parallel operations with first-error cancellation
+func parallelWithCancel(ctx context.Context, fns ...func(ctx context.Context) error) error {
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+
+	errCh := make(chan error, len(fns))
+	var wg sync.WaitGroup
+
+	for _, fn := range fns {
+		wg.Add(1)
+		go func(f func(ctx context.Context) error) {
+			defer wg.Done()
+			if err := f(ctx); err != nil {
+				errCh <- err
+				cancel() // Cancel other goroutines
+			}
+		}(fn)
+	}
+
+	go func() {
+		wg.Wait()
+		close(errCh)
+	}()
+
+	// Return first error
+	for err := range errCh {
+		if err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// Pattern 4: Request-scoped values with type-safe keys
+type contextKey string
+
+const (
+	traceIDKey contextKey = "trace_id"
+	userIDKey  contextKey = "user_id"
+	loggerKey  contextKey = "logger"
+)
+
+func WithTraceID(ctx context.Context, traceID string) context.Context {
+	return context.WithValue(ctx, traceIDKey, traceID)
+}
+
+func TraceIDFrom(ctx context.Context) string {
+	if v, ok := ctx.Value(traceIDKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+func WithUserID(ctx context.Context, userID string) context.Context {
+	return context.WithValue(ctx, userIDKey, userID)
+}
+
+func UserIDFrom(ctx context.Context) string {
+	if v, ok := ctx.Value(userIDKey).(string); ok {
+		return v
+	}
+	return ""
+}
+
+// Pattern 5: Timeout with cleanup
+func fetchWithTimeout(ctx context.Context, url string, timeout time.Duration) ([]byte, error) {
+	ctx, cancel := context.WithTimeout(ctx, timeout)
+	defer cancel()
+
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, url, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		if ctx.Err() == context.DeadlineExceeded {
+			return nil, fmt.Errorf("request to %s timed out after %v", url, timeout)
+		}
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	// Still uses the context deadline for reading the body
+	return io.ReadAll(resp.Body)
+}`,
+  usage: `// Graceful shutdown for a server
+func main() {
+    err := runWithGracefulShutdown(func(ctx context.Context) error {
+        server := &http.Server{Addr: ":8080"}
+        go func() {
+            <-ctx.Done()
+            server.Shutdown(context.Background())
+        }()
+        return server.ListenAndServe()
+    })
+    if err != nil && err != http.ErrServerClosed {
+        log.Fatal(err)
+    }
+}
+
+// Parallel tasks that cancel on first failure
+err := parallelWithCancel(ctx,
+    func(ctx context.Context) error { return syncDatabase(ctx) },
+    func(ctx context.Context) error { return updateCache(ctx) },
+    func(ctx context.Context) error { return notifyService(ctx) },
+)`,
+};
+
+## Overview
+
+Essential Go context patterns for production applications: graceful shutdown coordination, context-aware retry with backoff, parallel execution with first-error cancellation, type-safe context values, and timeout management.
+
+## Code
+
+```go
+ctx, cancel := context.WithTimeout(ctx, 5*time.Second)
+defer cancel()
+result, err := retryWithContext(ctx, 3, time.Second, operation)
+```
+
+## Notes
+
+- Always `defer cancel()` to release context resources even if the operation completes early
+- Never store contexts in structs; pass them as the first function parameter
+- Context cancellation is cooperative; long-running operations must check `ctx.Done()`
+- Use typed context keys to prevent collisions between packages
+- `parallelWithCancel` prevents wasted work by canceling siblings when one fails

@@ -1,0 +1,206 @@
+---
+title: "GraphQL Schema Design"
+description: "Production GraphQL schema with union types, interfaces, pagination, input validation, custom directives, and error handling."
+category: "GraphQL"
+language: "graphql"
+tags: ["graphql", "schema", "api-design", "types", "production-ready"]
+createdAt: "2025-02-25"
+updatedAt: "2025-03-15"
+---
+
+export const codeBlocks = {
+  main: `# Custom directives for authorization and validation
+directive @auth(requires: Role!) on FIELD_DEFINITION
+directive @rateLimit(max: Int!, window: Int!) on FIELD_DEFINITION
+directive @deprecated(reason: String) on FIELD_DEFINITION
+
+enum Role {
+  USER
+  ADMIN
+  MODERATOR
+}
+
+# Interface for common fields
+interface Node {
+  id: ID!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+interface Timestamped {
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+# User types with interface implementation
+type User implements Node & Timestamped {
+  id: ID!
+  email: String!
+  name: String!
+  avatar: String
+  role: Role!
+  posts(first: Int = 10, after: String): PostConnection!
+  notifications(unreadOnly: Boolean = false): [Notification!]!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+# Union type for search results
+union SearchResult = User | Post | Comment
+
+# Relay-style pagination
+type PostConnection {
+  edges: [PostEdge!]!
+  pageInfo: PageInfo!
+  totalCount: Int!
+}
+
+type PostEdge {
+  cursor: String!
+  node: Post!
+}
+
+type PageInfo {
+  hasNextPage: Boolean!
+  hasPreviousPage: Boolean!
+  startCursor: String
+  endCursor: String
+}
+
+type Post implements Node & Timestamped {
+  id: ID!
+  title: String!
+  content: String!
+  excerpt: String
+  status: PostStatus!
+  author: User!
+  tags: [String!]!
+  comments(first: Int = 20, after: String): CommentConnection!
+  likeCount: Int!
+  viewCount: Int!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+enum PostStatus {
+  DRAFT
+  PUBLISHED
+  ARCHIVED
+}
+
+type Comment implements Node {
+  id: ID!
+  body: String!
+  author: User!
+  post: Post!
+  parentComment: Comment
+  replies: [Comment!]!
+  createdAt: DateTime!
+  updatedAt: DateTime!
+}
+
+# Input types with validation
+input CreatePostInput {
+  title: String!
+  content: String!
+  tags: [String!]
+  status: PostStatus = DRAFT
+}
+
+input UpdatePostInput {
+  title: String
+  content: String
+  tags: [String!]
+  status: PostStatus
+}
+
+input PaginationInput {
+  first: Int = 20
+  after: String
+}
+
+# Error handling types
+type MutationResult {
+  success: Boolean!
+  errors: [UserError!]
+}
+
+type UserError {
+  field: String
+  message: String!
+  code: ErrorCode!
+}
+
+enum ErrorCode {
+  NOT_FOUND
+  VALIDATION_ERROR
+  UNAUTHORIZED
+  RATE_LIMITED
+  INTERNAL_ERROR
+}
+
+type CreatePostPayload {
+  post: Post
+  errors: [UserError!]
+}
+
+# Query root
+type Query {
+  # Single resource
+  user(id: ID!): User
+  post(id: ID!): Post
+
+  # Collections with pagination
+  posts(
+    status: PostStatus
+    authorId: ID
+    pagination: PaginationInput
+  ): PostConnection! @rateLimit(max: 100, window: 60)
+
+  # Search
+  search(query: String!, types: [String!]): [SearchResult!]!
+
+  # Viewer pattern (current user)
+  viewer: User @auth(requires: USER)
+}
+
+# Mutation root
+type Mutation {
+  createPost(input: CreatePostInput!): CreatePostPayload! @auth(requires: USER)
+  updatePost(id: ID!, input: UpdatePostInput!): CreatePostPayload! @auth(requires: USER)
+  deletePost(id: ID!): MutationResult! @auth(requires: USER)
+  likePost(id: ID!): Post! @auth(requires: USER)
+}
+
+# Subscription root
+type Subscription {
+  postPublished: Post!
+  commentAdded(postId: ID!): Comment!
+  notificationReceived: Notification! @auth(requires: USER)
+}
+
+scalar DateTime`,
+};
+
+## Overview
+
+A production GraphQL schema demonstrating best practices: Relay-style cursor pagination, union types for polymorphic results, interfaces for shared fields, structured error types, custom directives for auth/rate-limiting, and the viewer pattern.
+
+## Code
+
+```graphql
+type Query {
+  viewer: User @auth(requires: USER)
+  posts(first: Int, after: String): PostConnection!
+  search(query: String!): [SearchResult!]!
+}
+```
+
+## Notes
+
+- Relay cursor pagination scales better than offset pagination for large datasets
+- Union types (`SearchResult`) model polymorphic responses without type casting
+- Structured errors (`UserError` with code and field) enable programmatic error handling
+- The `viewer` pattern (`Query.viewer`) avoids passing user ID for authenticated operations
+- Custom directives (`@auth`, `@rateLimit`) keep business logic out of resolvers
+- Always use input types for mutations (enables validation and versioning)

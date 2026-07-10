@@ -1,0 +1,139 @@
+---
+title: "Docker Build and Push Pipeline"
+description: "CI/CD script for building multi-platform Docker images with layer caching, vulnerability scanning, and registry push."
+category: "Bash"
+language: "bash"
+tags: ["bash", "docker", "ci-cd", "container", "production-ready"]
+createdAt: "2025-02-15"
+updatedAt: "2025-03-05"
+---
+
+export const codeBlocks = {
+  main: `#!/usr/bin/env bash
+set -euo pipefail
+
+# Configuration from environment
+REGISTRY="\${REGISTRY:-ghcr.io}"
+IMAGE_NAME="\${IMAGE_NAME:-myorg/myapp}"
+DOCKERFILE="\${DOCKERFILE:-Dockerfile}"
+CONTEXT="\${CONTEXT:-.}"
+PLATFORMS="\${PLATFORMS:-linux/amd64,linux/arm64}"
+SCAN_ENABLED="\${SCAN_ENABLED:-true}"
+
+# Derive tags from git
+GIT_SHA=$(git rev-parse --short HEAD)
+GIT_BRANCH=$(git rev-parse --abbrev-ref HEAD | sed 's/[^a-zA-Z0-9._-]/-/g')
+BUILD_DATE=$(date -u +%Y-%m-%dT%H:%M:%SZ)
+VERSION="\${VERSION:-$GIT_SHA}"
+
+FULL_IMAGE="$REGISTRY/$IMAGE_NAME"
+
+log() { echo "===> $*"; }
+
+# Generate image tags
+generate_tags() {
+    local tags=()
+    tags+=("$FULL_IMAGE:$GIT_SHA")
+    tags+=("$FULL_IMAGE:$GIT_BRANCH")
+
+    if [[ "$GIT_BRANCH" == "main" || "$GIT_BRANCH" == "master" ]]; then
+        tags+=("$FULL_IMAGE:latest")
+    fi
+
+    # Semantic version tag if VERSION is set
+    if [[ "$VERSION" != "$GIT_SHA" ]]; then
+        tags+=("$FULL_IMAGE:$VERSION")
+    fi
+
+    printf '%s\n' "\${tags[@]}"
+}
+
+# Build image with cache
+build_image() {
+    log "Building image: $FULL_IMAGE:$GIT_SHA"
+
+    local tag_args=()
+    while IFS= read -r tag; do
+        tag_args+=("-t" "$tag")
+    done < <(generate_tags)
+
+    docker buildx build \
+        "\${tag_args[@]}" \
+        --platform "$PLATFORMS" \
+        --build-arg "BUILD_DATE=$BUILD_DATE" \
+        --build-arg "GIT_SHA=$GIT_SHA" \
+        --build-arg "VERSION=$VERSION" \
+        --label "org.opencontainers.image.created=$BUILD_DATE" \
+        --label "org.opencontainers.image.revision=$GIT_SHA" \
+        --label "org.opencontainers.image.version=$VERSION" \
+        --cache-from "type=registry,ref=$FULL_IMAGE:buildcache" \
+        --cache-to "type=registry,ref=$FULL_IMAGE:buildcache,mode=max" \
+        --file "$DOCKERFILE" \
+        --push \
+        "$CONTEXT"
+}
+
+# Scan image for vulnerabilities
+scan_image() {
+    if [[ "$SCAN_ENABLED" != "true" ]]; then
+        log "Scanning disabled, skipping"
+        return 0
+    fi
+
+    log "Scanning for vulnerabilities..."
+    local scan_result
+    if command -v trivy &>/dev/null; then
+        trivy image --severity HIGH,CRITICAL --exit-code 1 "$FULL_IMAGE:$GIT_SHA" || {
+            log "WARNING: Vulnerabilities found!"
+            return 1
+        }
+    elif command -v grype &>/dev/null; then
+        grype "$FULL_IMAGE:$GIT_SHA" --fail-on high || {
+            log "WARNING: Vulnerabilities found!"
+            return 1
+        }
+    else
+        log "No scanner available (install trivy or grype)"
+    fi
+}
+
+# Main pipeline
+main() {
+    log "Docker Build Pipeline"
+    log "Image: $FULL_IMAGE"
+    log "SHA: $GIT_SHA | Branch: $GIT_BRANCH | Version: $VERSION"
+    echo ""
+
+    # Authenticate with registry
+    if [[ -n "\${REGISTRY_TOKEN:-}" ]]; then
+        echo "$REGISTRY_TOKEN" | docker login "$REGISTRY" -u "\${REGISTRY_USER:-}" --password-stdin
+    fi
+
+    build_image
+    scan_image
+
+    log "Pipeline complete!"
+    log "Pushed tags:"
+    generate_tags | sed 's/^/  /'
+}
+
+main "$@"`,
+};
+
+## Overview
+
+A CI/CD pipeline script for building multi-architecture Docker images with BuildKit caching, OCI labels, vulnerability scanning, and automatic tagging from git metadata. Designed to run in GitHub Actions, GitLab CI, or any CI system.
+
+## Code
+
+```bash
+REGISTRY=ghcr.io IMAGE_NAME=myorg/app VERSION=1.2.3 ./build-push.sh
+```
+
+## Notes
+
+- `docker buildx` enables multi-platform builds (amd64/arm64) in a single command
+- Registry-based cache (`--cache-from`/`--cache-to`) speeds up builds across CI runs
+- OCI labels provide image provenance metadata for supply chain security
+- Trivy/Grype scanning catches known CVEs before deployment
+- Tags are derived from git state: SHA for immutability, branch for convenience, semver for releases

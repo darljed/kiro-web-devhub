@@ -1,0 +1,185 @@
+---
+title: "Table-Driven Tests Pattern"
+description: "Idiomatic Go testing with table-driven test cases, subtests, parallel execution, and custom test helpers for comprehensive coverage."
+category: "Go"
+language: "go"
+tags: ["go", "testing", "table-driven", "best-practices", "production-ready"]
+createdAt: "2025-02-08"
+updatedAt: "2025-02-28"
+---
+
+export const codeBlocks = {
+  main: `package calculator_test
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"testing"
+	"time"
+)
+
+// Example function under test
+func Divide(a, b float64) (float64, error) {
+	if b == 0 {
+		return 0, errors.New("division by zero")
+	}
+	return a / b, nil
+}
+
+func TestDivide(t *testing.T) {
+	tests := []struct {
+		name    string
+		a, b    float64
+		want    float64
+		wantErr bool
+	}{
+		{name: "positive division", a: 10, b: 2, want: 5},
+		{name: "negative result", a: -10, b: 2, want: -5},
+		{name: "fractional result", a: 1, b: 3, want: 0.3333333333333333},
+		{name: "divide by zero", a: 1, b: 0, wantErr: true},
+		{name: "zero numerator", a: 0, b: 5, want: 0},
+		{name: "large numbers", a: 1e18, b: 1e9, want: 1e9},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel() // Run subtests in parallel
+
+			got, err := Divide(tt.a, tt.b)
+			if (err != nil) != tt.wantErr {
+				t.Errorf("Divide(%v, %v) error = %v, wantErr %v", tt.a, tt.b, err, tt.wantErr)
+				return
+			}
+			if !tt.wantErr && got != tt.want {
+				t.Errorf("Divide(%v, %v) = %v, want %v", tt.a, tt.b, got, tt.want)
+			}
+		})
+	}
+}
+
+// Advanced: table-driven test with setup and teardown
+type UserService struct{}
+
+func (s *UserService) CreateUser(ctx context.Context, email string) (string, error) {
+	if email == "" {
+		return "", errors.New("email required")
+	}
+	return "usr_123", nil
+}
+
+func TestCreateUser(t *testing.T) {
+	tests := []struct {
+		name      string
+		email     string
+		timeout   time.Duration
+		wantID    string
+		wantErr   string
+		setup     func(t *testing.T) *UserService
+	}{
+		{
+			name:    "valid email creates user",
+			email:   "test@example.com",
+			timeout: 5 * time.Second,
+			wantID:  "usr_123",
+			setup:   func(t *testing.T) *UserService { return &UserService{} },
+		},
+		{
+			name:    "empty email returns error",
+			email:   "",
+			timeout: 5 * time.Second,
+			wantErr: "email required",
+			setup:   func(t *testing.T) *UserService { return &UserService{} },
+		},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			t.Parallel()
+			ctx, cancel := context.WithTimeout(context.Background(), tt.timeout)
+			defer cancel()
+
+			svc := tt.setup(t)
+			id, err := svc.CreateUser(ctx, tt.email)
+
+			if tt.wantErr != "" {
+				if err == nil || err.Error() != tt.wantErr {
+					t.Errorf("got error %v, want %q", err, tt.wantErr)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("unexpected error: %v", err)
+			}
+			if id != tt.wantID {
+				t.Errorf("got id %q, want %q", id, tt.wantID)
+			}
+		})
+	}
+}
+
+// Test helper for common assertions
+func assertEqual[T comparable](t *testing.T, got, want T) {
+	t.Helper()
+	if got != want {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+func assertError(t *testing.T, got error, wantMsg string) {
+	t.Helper()
+	if got == nil {
+		t.Fatal("expected error, got nil")
+	}
+	if got.Error() != wantMsg {
+		t.Errorf("got error %q, want %q", got.Error(), wantMsg)
+	}
+}
+
+func assertNoError(t *testing.T, err error) {
+	t.Helper()
+	if err != nil {
+		t.Fatalf("unexpected error: %v", err)
+	}
+}`,
+  usage: `// Run specific test case:
+// go test -run TestDivide/divide_by_zero
+
+// Run all tests in parallel with verbose output:
+// go test -v -parallel 8 ./...
+
+// With coverage:
+// go test -coverprofile=coverage.out -covermode=atomic ./...
+// go tool cover -html=coverage.out`,
+};
+
+## Overview
+
+The table-driven test pattern is the idiomatic way to write tests in Go. Each test case is a struct in a slice, iterated over with `t.Run()` for named subtests. This provides clear test names in output, parallel execution, and easy addition of new cases.
+
+## Code
+
+```go
+tests := []struct {
+    name string
+    input string
+    want  string
+}{
+    {name: "basic", input: "hello", want: "HELLO"},
+}
+for _, tt := range tests {
+    t.Run(tt.name, func(t *testing.T) {
+        t.Parallel()
+        got := Transform(tt.input)
+        assertEqual(t, got, tt.want)
+    })
+}
+```
+
+## Notes
+
+- `t.Parallel()` runs subtests concurrently for faster test suites
+- `t.Helper()` marks functions as test helpers so failures report the correct line
+- Named subtests enable running individual cases with `go test -run TestName/case_name`
+- Include `setup` functions in test structs for per-case initialization (mocks, fixtures)
+- Use `t.Fatalf` for unrecoverable errors and `t.Errorf` for assertion failures

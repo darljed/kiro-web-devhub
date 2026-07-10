@@ -1,0 +1,186 @@
+---
+title: "Node.js Stream Pipeline"
+description: "Type-safe stream pipeline utility for processing large files with backpressure handling, error propagation, and progress tracking."
+category: "TypeScript"
+language: "typescript"
+tags: ["typescript", "nodejs", "streams", "backpressure", "production-ready"]
+createdAt: "2025-02-01"
+updatedAt: "2025-02-20"
+---
+
+export const codeBlocks = {
+  main: `import { Transform, Readable, Writable, pipeline } from "node:stream";
+import { promisify } from "node:util";
+import { createReadStream, createWriteStream } from "node:fs";
+import { createGzip, createGunzip } from "node:zlib";
+
+const pipelineAsync = promisify(pipeline);
+
+interface ProcessorOptions<TInput, TOutput> {
+  transform: (chunk: TInput) => TOutput | Promise<TOutput>;
+  batchSize?: number;
+  highWaterMark?: number;
+  onProgress?: (processed: number) => void;
+}
+
+export function createTransformStream<TInput, TOutput>(
+  options: ProcessorOptions<TInput, TOutput>
+): Transform {
+  let processed = 0;
+  const { transform, batchSize = 1, onProgress } = options;
+
+  const batch: TInput[] = [];
+
+  return new Transform({
+    objectMode: true,
+    highWaterMark: options.highWaterMark ?? 16,
+    async transform(chunk: TInput, _encoding, callback) {
+      try {
+        if (batchSize > 1) {
+          batch.push(chunk);
+          if (batch.length >= batchSize) {
+            const results = await Promise.all(batch.map(transform));
+            batch.length = 0;
+            for (const result of results) {
+              this.push(result);
+              processed++;
+            }
+          }
+        } else {
+          const result = await transform(chunk);
+          this.push(result);
+          processed++;
+        }
+        onProgress?.(processed);
+        callback();
+      } catch (error) {
+        callback(error instanceof Error ? error : new Error(String(error)));
+      }
+    },
+    flush(callback) {
+      // Process remaining items in batch
+      if (batch.length > 0) {
+        Promise.all(batch.map(transform))
+          .then((results) => {
+            for (const result of results) {
+              this.push(result);
+              processed++;
+            }
+            onProgress?.(processed);
+            callback();
+          })
+          .catch((err) => callback(err instanceof Error ? err : new Error(String(err))));
+      } else {
+        callback();
+      }
+    },
+  });
+}
+
+// Line-by-line reader for large files
+export function createLineReader(filePath: string): Readable {
+  let buffer = "";
+
+  const lineTransform = new Transform({
+    objectMode: true,
+    transform(chunk: Buffer, _encoding, callback) {
+      buffer += chunk.toString();
+      const lines = buffer.split("\\n");
+      buffer = lines.pop() ?? "";
+      for (const line of lines) {
+        if (line.trim()) this.push(line);
+      }
+      callback();
+    },
+    flush(callback) {
+      if (buffer.trim()) this.push(buffer);
+      callback();
+    },
+  });
+
+  return createReadStream(filePath).pipe(lineTransform);
+}
+
+// JSON Lines writer with optional gzip compression
+export async function processJsonLines<T, R>(
+  inputPath: string,
+  outputPath: string,
+  transformer: (item: T) => R | Promise<R>,
+  options?: { compress?: boolean; batchSize?: number }
+): Promise<number> {
+  let count = 0;
+  const streams: (Readable | Transform | Writable)[] = [
+    createLineReader(inputPath),
+    createTransformStream<string, string>({
+      transform: async (line) => {
+        const parsed = JSON.parse(line) as T;
+        const result = await transformer(parsed);
+        count++;
+        return JSON.stringify(result);
+      },
+      batchSize: options?.batchSize,
+      onProgress: (n) => { count = n; },
+    }),
+    new Transform({
+      objectMode: true,
+      transform(chunk: string, _encoding, callback) {
+        callback(null, chunk + "\\n");
+      },
+    }),
+  ];
+
+  if (options?.compress) {
+    streams.push(createGzip());
+  }
+  streams.push(createWriteStream(outputPath));
+
+  await pipelineAsync(...(streams as [Readable, ...Transform[], Writable]));
+  return count;
+}`,
+  usage: `// Process a large JSON Lines file with transformation
+const processed = await processJsonLines<RawLog, CleanedLog>(
+  "./data/raw-logs.jsonl",
+  "./data/cleaned-logs.jsonl.gz",
+  (log) => ({
+    timestamp: new Date(log.ts).toISOString(),
+    level: log.severity,
+    message: log.msg.trim(),
+    metadata: log.meta ?? {},
+  }),
+  { compress: true, batchSize: 100 }
+);
+console.log(\`Processed \${processed} records\`);`,
+};
+
+## Overview
+
+A composable stream pipeline utility for processing large files without loading them entirely into memory. Uses Node.js streams with backpressure handling to process gigabyte-scale files with constant memory usage, supporting batching, compression, and progress tracking.
+
+## Code
+
+```typescript
+export function createTransformStream<TInput, TOutput>(
+  options: ProcessorOptions<TInput, TOutput>
+): Transform {
+  return new Transform({
+    objectMode: true,
+    async transform(chunk: TInput, _encoding, callback) {
+      try {
+        const result = await options.transform(chunk);
+        this.push(result);
+        callback();
+      } catch (error) {
+        callback(error instanceof Error ? error : new Error(String(error)));
+      }
+    },
+  });
+}
+```
+
+## Notes
+
+- Backpressure is automatically handled by Node.js stream internals via `highWaterMark`
+- The `flush` method ensures batched items are processed when the stream ends
+- Use `pipeline()` instead of `.pipe()` for proper error propagation and cleanup
+- Object mode streams handle one item at a time; set `highWaterMark` to control buffer depth
+- For CSV processing, consider using this with a CSV parser transform stream

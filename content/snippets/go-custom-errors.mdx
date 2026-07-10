@@ -1,0 +1,204 @@
+---
+title: "Structured Custom Errors"
+description: "Production error handling patterns with sentinel errors, wrapped context, error types, and structured error responses for APIs."
+category: "Go"
+language: "go"
+tags: ["go", "error-handling", "api", "structured-errors", "production-ready"]
+createdAt: "2025-02-25"
+updatedAt: "2025-03-15"
+---
+
+export const codeBlocks = {
+  main: `package apperror
+
+import (
+	"errors"
+	"fmt"
+	"net/http"
+	"runtime"
+)
+
+// Sentinel errors for comparison with errors.Is()
+var (
+	ErrNotFound      = errors.New("resource not found")
+	ErrUnauthorized  = errors.New("unauthorized")
+	ErrForbidden     = errors.New("forbidden")
+	ErrConflict      = errors.New("resource conflict")
+	ErrValidation    = errors.New("validation error")
+	ErrInternal      = errors.New("internal error")
+	ErrRateLimit     = errors.New("rate limit exceeded")
+)
+
+// AppError provides structured error information for API responses
+type AppError struct {
+	Code       string            // Machine-readable error code
+	Message    string            // Human-readable message
+	StatusCode int               // HTTP status code
+	Cause      error             // Underlying error (wrapped)
+	Fields     map[string]string // Validation field errors
+	RequestID  string            // For correlation
+	Stack      string            // Call stack for debugging
+}
+
+func (e *AppError) Error() string {
+	if e.Cause != nil {
+		return fmt.Sprintf("%s: %v", e.Message, e.Cause)
+	}
+	return e.Message
+}
+
+func (e *AppError) Unwrap() error {
+	return e.Cause
+}
+
+// Is supports errors.Is() by checking the Cause chain
+func (e *AppError) Is(target error) bool {
+	return errors.Is(e.Cause, target)
+}
+
+// Builder pattern for constructing errors
+func New(code string, message string) *AppError {
+	return &AppError{
+		Code:       code,
+		Message:    message,
+		StatusCode: http.StatusInternalServerError,
+		Stack:      captureStack(2),
+	}
+}
+
+func (e *AppError) WithStatus(status int) *AppError {
+	e.StatusCode = status
+	return e
+}
+
+func (e *AppError) WithCause(err error) *AppError {
+	e.Cause = err
+	return e
+}
+
+func (e *AppError) WithFields(fields map[string]string) *AppError {
+	e.Fields = fields
+	return e
+}
+
+func (e *AppError) WithRequestID(id string) *AppError {
+	e.RequestID = id
+	return e
+}
+
+// Convenience constructors
+func NotFound(resource string, id string) *AppError {
+	return New("NOT_FOUND", fmt.Sprintf("%s with id '%s' not found", resource, id)).
+		WithStatus(http.StatusNotFound).
+		WithCause(ErrNotFound)
+}
+
+func Unauthorized(reason string) *AppError {
+	return New("UNAUTHORIZED", reason).
+		WithStatus(http.StatusUnauthorized).
+		WithCause(ErrUnauthorized)
+}
+
+func Forbidden(reason string) *AppError {
+	return New("FORBIDDEN", reason).
+		WithStatus(http.StatusForbidden).
+		WithCause(ErrForbidden)
+}
+
+func ValidationFailed(fields map[string]string) *AppError {
+	return New("VALIDATION_ERROR", "Request validation failed").
+		WithStatus(http.StatusBadRequest).
+		WithCause(ErrValidation).
+		WithFields(fields)
+}
+
+func Internal(err error) *AppError {
+	return New("INTERNAL_ERROR", "An internal error occurred").
+		WithStatus(http.StatusInternalServerError).
+		WithCause(fmt.Errorf("%w: %v", ErrInternal, err))
+}
+
+// ToHTTPResponse converts the error to a JSON-serializable response
+type ErrorResponse struct {
+	Error struct {
+		Code      string            \`json:"code"\`
+		Message   string            \`json:"message"\`
+		Fields    map[string]string \`json:"fields,omitempty"\`
+		RequestID string            \`json:"request_id,omitempty"\`
+	} \`json:"error"\`
+}
+
+func (e *AppError) ToResponse() ErrorResponse {
+	resp := ErrorResponse{}
+	resp.Error.Code = e.Code
+	resp.Error.Message = e.Message
+	resp.Error.Fields = e.Fields
+	resp.Error.RequestID = e.RequestID
+	return resp
+}
+
+func captureStack(skip int) string {
+	buf := make([]byte, 4096)
+	n := runtime.Stack(buf, false)
+	return string(buf[:n])
+}
+
+// HandleError is a helper for HTTP handlers
+func HandleError(w http.ResponseWriter, err error) {
+	var appErr *AppError
+	if errors.As(err, &appErr) {
+		writeJSON(w, appErr.StatusCode, appErr.ToResponse())
+		return
+	}
+	// Unknown error - wrap as internal
+	internal := Internal(err)
+	writeJSON(w, internal.StatusCode, internal.ToResponse())
+}`,
+  usage: `func GetUserHandler(w http.ResponseWriter, r *http.Request) {
+    user, err := userService.GetByID(r.Context(), userID)
+    if err != nil {
+        apperror.HandleError(w, err)
+        return
+    }
+    writeJSON(w, http.StatusOK, user)
+}
+
+// In service layer
+func (s *UserService) GetByID(ctx context.Context, id string) (*User, error) {
+    user, err := s.repo.FindByID(ctx, id)
+    if err != nil {
+        if errors.Is(err, sql.ErrNoRows) {
+            return nil, apperror.NotFound("user", id)
+        }
+        return nil, apperror.Internal(err)
+    }
+    return user, nil
+}
+
+// Check error types
+if errors.Is(err, apperror.ErrNotFound) {
+    // Handle not found case
+}`,
+};
+
+## Overview
+
+A structured error system that provides machine-readable codes, HTTP status mapping, field-level validation errors, and proper error wrapping. Supports Go's `errors.Is()` and `errors.As()` for programmatic error inspection throughout the call stack.
+
+## Code
+
+```go
+err := apperror.NotFound("user", "usr_123")
+err = apperror.ValidationFailed(map[string]string{
+    "email": "invalid format",
+})
+apperror.HandleError(w, err)
+```
+
+## Notes
+
+- Sentinel errors enable `errors.Is()` checks without inspecting strings
+- The builder pattern allows attaching context incrementally as errors propagate up
+- `Unwrap()` implementation enables the standard library's error chain traversal
+- Stack capture at creation time pinpoints where errors originate (expensive, use in non-hot paths)
+- `HandleError` converts any error into a consistent JSON response format

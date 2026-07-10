@@ -1,0 +1,174 @@
+---
+title: "Type-Safe Finite State Machine"
+description: "A compile-time-checked state machine that prevents invalid transitions and enforces correct event handling through TypeScript's type system."
+category: "TypeScript"
+language: "typescript"
+tags: ["typescript", "state-machine", "design-patterns", "production-ready"]
+createdAt: "2025-03-15"
+updatedAt: "2025-04-01"
+---
+
+export const codeBlocks = {
+  main: `type StateConfig = {
+  [state: string]: {
+    [event: string]: string;
+  };
+};
+
+type StateFrom<T extends StateConfig> = keyof T & string;
+type EventFrom<T extends StateConfig, S extends StateFrom<T>> = keyof T[S] & string;
+type TransitionTarget<T extends StateConfig, S extends StateFrom<T>, E extends EventFrom<T, S>> = T[S][E] & string;
+
+interface MachineContext<T extends StateConfig> {
+  state: StateFrom<T>;
+  history: { from: string; to: string; event: string; timestamp: number }[];
+  data: Map<string, unknown>;
+}
+
+type TransitionHandler<T extends StateConfig> = (
+  context: MachineContext<T>,
+  event: string
+) => void | Promise<void>;
+
+export class StateMachine<T extends StateConfig> {
+  private context: MachineContext<T>;
+  private onEnterHandlers = new Map<string, TransitionHandler<T>>();
+  private onExitHandlers = new Map<string, TransitionHandler<T>>();
+  private onTransitionHandlers: TransitionHandler<T>[] = [];
+
+  constructor(
+    private readonly config: T,
+    initialState: StateFrom<T>
+  ) {
+    this.context = {
+      state: initialState,
+      history: [],
+      data: new Map(),
+    };
+  }
+
+  get currentState(): StateFrom<T> {
+    return this.context.state;
+  }
+
+  get history() {
+    return [...this.context.history];
+  }
+
+  onEnter(state: StateFrom<T>, handler: TransitionHandler<T>): this {
+    this.onEnterHandlers.set(state, handler);
+    return this;
+  }
+
+  onExit(state: StateFrom<T>, handler: TransitionHandler<T>): this {
+    this.onExitHandlers.set(state, handler);
+    return this;
+  }
+
+  onTransition(handler: TransitionHandler<T>): this {
+    this.onTransitionHandlers.push(handler);
+    return this;
+  }
+
+  canTransition<S extends StateFrom<T>>(state: S, event: EventFrom<T, S>): boolean {
+    return event in (this.config[state] ?? {});
+  }
+
+  async send<S extends StateFrom<T>, E extends EventFrom<T, S>>(
+    event: E extends EventFrom<T, typeof this.context.state> ? E : never
+  ): Promise<StateFrom<T>> {
+    const currentState = this.context.state;
+    const transitions = this.config[currentState];
+
+    if (!transitions || !(event in transitions)) {
+      throw new Error(\`Invalid transition: \${currentState} + \${event}\`);
+    }
+
+    const nextState = transitions[event as string] as StateFrom<T>;
+
+    // Execute exit handler
+    const exitHandler = this.onExitHandlers.get(currentState);
+    if (exitHandler) await exitHandler(this.context, event);
+
+    // Record transition
+    this.context.history.push({
+      from: currentState,
+      to: nextState,
+      event,
+      timestamp: Date.now(),
+    });
+
+    // Update state
+    this.context.state = nextState;
+
+    // Execute transition handlers
+    for (const handler of this.onTransitionHandlers) {
+      await handler(this.context, event);
+    }
+
+    // Execute enter handler
+    const enterHandler = this.onEnterHandlers.get(nextState);
+    if (enterHandler) await enterHandler(this.context, event);
+
+    return nextState;
+  }
+
+  setData(key: string, value: unknown): void {
+    this.context.data.set(key, value);
+  }
+
+  getData<V>(key: string): V | undefined {
+    return this.context.data.get(key) as V | undefined;
+  }
+}`,
+  usage: `// Define order state machine
+const orderStates = {
+  draft: { submit: "pending", cancel: "cancelled" },
+  pending: { approve: "confirmed", reject: "draft", cancel: "cancelled" },
+  confirmed: { ship: "shipped", cancel: "refunding" },
+  shipped: { deliver: "delivered", returnRequest: "returning" },
+  delivered: { returnRequest: "returning" },
+  returning: { refund: "refunded" },
+  refunding: { refund: "refunded" },
+  refunded: {},
+  cancelled: {},
+} as const;
+
+type OrderStates = typeof orderStates;
+const order = new StateMachine<OrderStates>(orderStates, "draft");
+
+order
+  .onEnter("confirmed", async (ctx) => {
+    await sendConfirmationEmail(ctx.getData("email"));
+  })
+  .onEnter("shipped", async (ctx) => {
+    await updateInventory(ctx.getData("items"));
+  })
+  .onTransition((ctx, event) => {
+    console.log(\`Order transitioned to \${ctx.state} via \${event}\`);
+  });
+
+await order.send("submit");   // draft -> pending
+await order.send("approve");  // pending -> confirmed
+await order.send("ship");     // confirmed -> shipped`,
+};
+
+## Overview
+
+A finite state machine with compile-time transition validation. The state configuration object defines all valid transitions, and TypeScript ensures you cannot send events that are not valid for the current state.
+
+## Code
+
+```typescript
+const machine = new StateMachine(stateConfig, "initial");
+machine.onEnter("active", handler);
+await machine.send("activate"); // Only valid events compile
+```
+
+## Notes
+
+- Invalid transitions are caught by the type system before runtime
+- `onEnter` and `onExit` hooks handle side effects (notifications, logging, cleanup)
+- The history array provides a full audit trail of all state transitions
+- The `data` map stores context that persists across transitions (user info, order details)
+- Use `as const` on the config object to get literal type inference for state/event names

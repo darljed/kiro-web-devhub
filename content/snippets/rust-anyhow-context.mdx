@@ -1,0 +1,165 @@
+---
+title: "Error Context with anyhow"
+description: "Application-level error handling using anyhow for rich error context chains, downcasting, and integration with thiserror domain errors."
+category: "Rust"
+language: "rust"
+tags: ["rust", "error-handling", "anyhow", "context", "production-ready"]
+createdAt: "2025-02-28"
+updatedAt: "2025-03-18"
+---
+
+export const codeBlocks = {
+  main: `use anyhow::{Context, Result, bail, ensure, anyhow};
+use std::path::{Path, PathBuf};
+use std::fs;
+
+/// Load and parse a configuration file with rich error context
+pub fn load_config(path: &Path) -> Result<AppConfig> {
+    let content = fs::read_to_string(path)
+        .with_context(|| format!("Failed to read config file: {}", path.display()))?;
+
+    let config: AppConfig = toml::from_str(&content)
+        .with_context(|| format!("Failed to parse config file: {}", path.display()))?;
+
+    validate_config(&config)
+        .with_context(|| "Config validation failed")?;
+
+    Ok(config)
+}
+
+/// Validate configuration with bail! for early returns
+fn validate_config(config: &AppConfig) -> Result<()> {
+    ensure!(
+        !config.database_url.is_empty(),
+        "database_url must not be empty"
+    );
+
+    ensure!(
+        config.port > 0 && config.port < 65536,
+        "port must be between 1 and 65535, got {}",
+        config.port
+    );
+
+    if config.workers == 0 {
+        bail!("workers must be at least 1");
+    }
+
+    // Validate paths exist
+    if let Some(ref cert_path) = config.tls_cert {
+        ensure!(
+            Path::new(cert_path).exists(),
+            "TLS certificate not found: {}",
+            cert_path
+        );
+    }
+
+    Ok(())
+}
+
+/// Application startup that chains contexts for debugging
+pub async fn start_application() -> Result<()> {
+    let config_path = find_config_file()
+        .context("Could not locate configuration file")?;
+
+    let config = load_config(&config_path)
+        .context("Application configuration error")?;
+
+    let db = connect_database(&config.database_url)
+        .await
+        .with_context(|| format!("Failed to connect to database: {}", config.database_url))?;
+
+    run_migrations(&db)
+        .await
+        .context("Database migration failed")?;
+
+    let server = start_server(&config)
+        .await
+        .with_context(|| format!("Failed to start server on port {}", config.port))?;
+
+    server.run().await.context("Server exited with error")
+}
+
+/// Downcast to inspect specific error types
+pub fn handle_startup_error(error: &anyhow::Error) {
+    // Walk the error chain
+    eprintln!("Error: {}", error);
+    for (i, cause) in error.chain().enumerate().skip(1) {
+        eprintln!("  Caused by [{i}]: {cause}");
+    }
+
+    // Check for specific error types
+    if let Some(io_err) = error.downcast_ref::<std::io::Error>() {
+        match io_err.kind() {
+            std::io::ErrorKind::PermissionDenied => {
+                eprintln!("Hint: Check file permissions or run with elevated privileges");
+            }
+            std::io::ErrorKind::AddrInUse => {
+                eprintln!("Hint: Another process is using this port. Try a different port.");
+            }
+            _ => {}
+        }
+    }
+
+    // Check for our domain errors
+    if error.downcast_ref::<DatabaseError>().is_some() {
+        eprintln!("Hint: Ensure the database is running and accessible");
+    }
+}
+
+// Domain types
+#[derive(Debug, serde::Deserialize)]
+pub struct AppConfig {
+    pub database_url: String,
+    pub port: u32,
+    pub workers: usize,
+    pub tls_cert: Option<String>,
+}
+
+#[derive(Debug, thiserror::Error)]
+#[error("Database error: {0}")]
+pub struct DatabaseError(String);
+
+// Placeholder functions
+fn find_config_file() -> Result<PathBuf> { Ok(PathBuf::from("config.toml")) }
+async fn connect_database(_url: &str) -> Result<()> { Ok(()) }
+async fn run_migrations(_db: &()) -> Result<()> { Ok(()) }
+async fn start_server(_config: &AppConfig) -> Result<Server> { Ok(Server) }
+struct Server;
+impl Server { async fn run(&self) -> Result<()> { Ok(()) } }`,
+  usage: `fn main() {
+    let runtime = tokio::runtime::Runtime::new().unwrap();
+    if let Err(error) = runtime.block_on(start_application()) {
+        handle_startup_error(&error);
+        std::process::exit(1);
+    }
+}
+
+// Error output looks like:
+// Error: Application configuration error
+//   Caused by [1]: Failed to read config file: /etc/app/config.toml
+//   Caused by [2]: No such file or directory (os error 2)`,
+};
+
+## Overview
+
+`anyhow` provides application-level error handling with context chains that show what each layer was doing when the error occurred. Unlike `thiserror` (for library error types), `anyhow` is designed for applications where you want rich debugging information without defining error types for every failure mode.
+
+## Code
+
+```rust
+let data = fs::read_to_string(path)
+    .with_context(|| format!("reading config from {}", path.display()))?;
+
+// Quick validation with bail/ensure
+ensure!(port > 0, "invalid port: {}", port);
+bail!("unsupported feature: {}", name);
+```
+
+## Notes
+
+- `with_context()` wraps errors with additional context forming a chain (newest first)
+- `bail!` is shorthand for `return Err(anyhow!(...))` with format string support
+- `ensure!` is shorthand for `if !condition { bail!(...) }`
+- `error.chain()` iterates through all layers for display
+- `downcast_ref()` enables inspecting the original error type for recovery decisions
+- Use `thiserror` for library errors (structured) and `anyhow` for applications (convenience)

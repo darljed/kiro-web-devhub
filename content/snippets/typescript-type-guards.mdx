@@ -1,0 +1,140 @@
+---
+title: "Exhaustive Type Guards"
+description: "Type-safe discriminated union handling with exhaustive checking to catch missing cases at compile time."
+category: "TypeScript"
+language: "typescript"
+tags: ["typescript", "type-guards", "discriminated-unions", "production-ready"]
+createdAt: "2025-01-08"
+updatedAt: "2025-01-25"
+---
+
+export const codeBlocks = {
+  main: `// Exhaustive check helper - triggers compile error if a case is missed
+function assertNever(value: never): never {
+  throw new Error(\`Unexpected value: \${JSON.stringify(value)}\`);
+}
+
+// Discriminated union types
+type ApiResponse =
+  | { status: "loading" }
+  | { status: "success"; data: unknown; cachedAt?: Date }
+  | { status: "error"; error: Error; retryable: boolean }
+  | { status: "idle" };
+
+// Type guard functions
+function isSuccess(
+  response: ApiResponse
+): response is Extract<ApiResponse, { status: "success" }> {
+  return response.status === "success";
+}
+
+function isError(
+  response: ApiResponse
+): response is Extract<ApiResponse, { status: "error" }> {
+  return response.status === "error";
+}
+
+// Exhaustive handler
+function handleResponse(response: ApiResponse): string {
+  switch (response.status) {
+    case "idle":
+      return "Waiting for request...";
+    case "loading":
+      return "Loading...";
+    case "success":
+      return \`Data received\${response.cachedAt ? " (cached)" : ""}\`;
+    case "error":
+      return response.retryable
+        ? \`Error: \${response.error.message}. Retrying...\`
+        : \`Fatal: \${response.error.message}\`;
+    default:
+      return assertNever(response);
+  }
+}
+
+// Runtime type narrowing for API payloads
+interface User {
+  id: string;
+  email: string;
+  name: string;
+}
+
+function isUser(value: unknown): value is User {
+  return (
+    typeof value === "object" &&
+    value !== null &&
+    "id" in value &&
+    "email" in value &&
+    "name" in value &&
+    typeof (value as User).id === "string" &&
+    typeof (value as User).email === "string" &&
+    typeof (value as User).name === "string"
+  );
+}
+
+// Branded types for extra safety
+type UserId = string & { readonly __brand: unique symbol };
+type OrderId = string & { readonly __brand: unique symbol };
+
+function createUserId(id: string): UserId {
+  if (!id.startsWith("usr_")) {
+    throw new Error("Invalid user ID format");
+  }
+  return id as UserId;
+}`,
+  usage: `// The compiler will error if you add a new status but forget to handle it
+type PaymentStatus = "pending" | "processing" | "completed" | "failed" | "refunded";
+
+function getStatusColor(status: PaymentStatus): string {
+  switch (status) {
+    case "pending": return "yellow";
+    case "processing": return "blue";
+    case "completed": return "green";
+    case "failed": return "red";
+    case "refunded": return "gray";
+    default: return assertNever(status);
+  }
+}`,
+};
+
+## Overview
+
+Type guards and exhaustive checking patterns that leverage TypeScript's type system to catch bugs at compile time. The `assertNever` pattern ensures that when you add new variants to a union type, the compiler forces you to handle them everywhere they are used.
+
+## Code
+
+```typescript
+function assertNever(value: never): never {
+  throw new Error(`Unexpected value: ${JSON.stringify(value)}`);
+}
+
+type ApiResponse =
+  | { status: "loading" }
+  | { status: "success"; data: unknown; cachedAt?: Date }
+  | { status: "error"; error: Error; retryable: boolean }
+  | { status: "idle" };
+
+function handleResponse(response: ApiResponse): string {
+  switch (response.status) {
+    case "idle":
+      return "Waiting for request...";
+    case "loading":
+      return "Loading...";
+    case "success":
+      return `Data received${response.cachedAt ? " (cached)" : ""}`;
+    case "error":
+      return response.retryable
+        ? `Error: ${response.error.message}. Retrying...`
+        : `Fatal: ${response.error.message}`;
+    default:
+      return assertNever(response);
+  }
+}
+```
+
+## Notes
+
+- Adding a new variant to the union without handling it causes a compile-time error at the `assertNever` call
+- Use `Extract` and `Exclude` utility types to narrow union members in type guard return types
+- Branded types prevent accidental mixing of string IDs from different domains
+- Runtime type guards (`isUser`) are essential for validating data from external sources (APIs, localStorage)

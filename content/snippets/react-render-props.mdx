@@ -1,0 +1,154 @@
+---
+title: "Render Props with TypeScript"
+description: "A flexible render props pattern for sharing stateful logic between components, with full type inference for the render function arguments."
+category: "React"
+language: "typescript"
+tags: ["react", "patterns", "render-props", "typescript", "production-ready"]
+createdAt: "2025-02-25"
+updatedAt: "2025-03-15"
+---
+
+export const codeBlocks = {
+  main: `import { useState, useEffect, useCallback, ReactNode } from "react";
+
+// Generic fetch render prop component
+interface FetchState<T> {
+  data: T | null;
+  loading: boolean;
+  error: Error | null;
+  refetch: () => void;
+}
+
+interface FetchProps<T> {
+  url: string;
+  options?: RequestInit;
+  children: (state: FetchState<T>) => ReactNode;
+  transform?: (raw: unknown) => T;
+}
+
+export function Fetch<T>({ url, options, children, transform }: FetchProps<T>) {
+  const [data, setData] = useState<T | null>(null);
+  const [loading, setLoading] = useState(true);
+  const [error, setError] = useState<Error | null>(null);
+
+  const fetchData = useCallback(async () => {
+    setLoading(true);
+    setError(null);
+    try {
+      const response = await fetch(url, options);
+      if (!response.ok) throw new Error(\`HTTP \${response.status}\`);
+      const raw = await response.json();
+      setData(transform ? transform(raw) : raw);
+    } catch (err) {
+      setError(err instanceof Error ? err : new Error(String(err)));
+    } finally {
+      setLoading(false);
+    }
+  }, [url, options, transform]);
+
+  useEffect(() => { fetchData(); }, [fetchData]);
+
+  return <>{children({ data, loading, error, refetch: fetchData })}</>;
+}
+
+// Mouse position render prop
+interface MouseState {
+  x: number;
+  y: number;
+  isOver: boolean;
+}
+
+interface MouseTrackerProps {
+  children: (state: MouseState) => ReactNode;
+}
+
+export function MouseTracker({ children }: MouseTrackerProps) {
+  const [state, setState] = useState<MouseState>({ x: 0, y: 0, isOver: false });
+
+  const handleMouseMove = useCallback((e: React.MouseEvent) => {
+    setState({ x: e.clientX, y: e.clientY, isOver: true });
+  }, []);
+
+  const handleMouseLeave = useCallback(() => {
+    setState((prev) => ({ ...prev, isOver: false }));
+  }, []);
+
+  return (
+    <div onMouseMove={handleMouseMove} onMouseLeave={handleMouseLeave} style={{ height: "100%" }}>
+      {children(state)}
+    </div>
+  );
+}
+
+// Toggle render prop with transition support
+interface ToggleState {
+  isOpen: boolean;
+  toggle: () => void;
+  open: () => void;
+  close: () => void;
+}
+
+interface ToggleProps {
+  initial?: boolean;
+  children: (state: ToggleState) => ReactNode;
+  onToggle?: (isOpen: boolean) => void;
+}
+
+export function Toggle({ initial = false, children, onToggle }: ToggleProps) {
+  const [isOpen, setIsOpen] = useState(initial);
+
+  const toggle = useCallback(() => {
+    setIsOpen((prev) => {
+      const next = !prev;
+      onToggle?.(next);
+      return next;
+    });
+  }, [onToggle]);
+
+  const open = useCallback(() => { setIsOpen(true); onToggle?.(true); }, [onToggle]);
+  const close = useCallback(() => { setIsOpen(false); onToggle?.(false); }, [onToggle]);
+
+  return <>{children({ isOpen, toggle, open, close })}</>;
+}`,
+  usage: `// Data fetching with type inference
+<Fetch<User[]> url="/api/users">
+  {({ data, loading, error, refetch }) => {
+    if (loading) return <Spinner />;
+    if (error) return <Error message={error.message} onRetry={refetch} />;
+    return <UserList users={data!} />;
+  }}
+</Fetch>
+
+// Composing multiple render props
+<Toggle initial={false}>
+  {({ isOpen, toggle }) => (
+    <div>
+      <button onClick={toggle}>{isOpen ? "Close" : "Open"} Menu</button>
+      {isOpen && <Navigation />}
+    </div>
+  )}
+</Toggle>`,
+};
+
+## Overview
+
+Render props provide maximum flexibility by letting consumers control exactly what renders while the provider manages stateful logic. This pattern shines when different consumers need different UI representations of the same underlying state or behavior.
+
+## Code
+
+```tsx
+<Fetch<User> url="/api/user/1">
+  {({ data, loading, error }) => {
+    if (loading) return <Spinner />;
+    return <UserCard user={data!} />;
+  }}
+</Fetch>
+```
+
+## Notes
+
+- TypeScript generics on the component flow through to the render function arguments
+- Render props are still useful for headless UI components where hooks would require wrapper components
+- The `refetch` function enables manual refresh without remounting
+- Combine with Suspense for server components or use in client components for dynamic data
+- For most cases, prefer custom hooks over render props for cleaner composition

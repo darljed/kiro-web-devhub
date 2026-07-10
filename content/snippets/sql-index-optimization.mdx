@@ -1,0 +1,104 @@
+---
+title: "Index Strategy and Query Optimization"
+description: "SQL indexing patterns for covering indexes, partial indexes, composite keys, and EXPLAIN ANALYZE interpretation for query tuning."
+category: "SQL"
+language: "sql"
+tags: ["sql", "indexing", "optimization", "performance", "production-ready"]
+createdAt: "2025-04-01"
+updatedAt: "2025-04-15"
+---
+
+export const codeBlocks = {
+  main: `-- Covering index: all columns needed are in the index (index-only scan)
+CREATE INDEX idx_orders_covering ON orders (
+    customer_id,
+    order_date DESC
+) INCLUDE (amount, status);
+
+-- Query satisfied entirely from the index, no table access needed
+EXPLAIN ANALYZE
+SELECT customer_id, order_date, amount, status
+FROM orders
+WHERE customer_id = 'cust_123'
+  AND order_date >= '2025-01-01'
+ORDER BY order_date DESC
+LIMIT 20;
+
+-- Partial index: only indexes rows matching a condition
+CREATE INDEX idx_orders_pending ON orders (created_at)
+WHERE status = 'pending';
+
+-- Tiny index for a common query on a large table
+SELECT * FROM orders WHERE status = 'pending' ORDER BY created_at;
+
+-- Composite index ordering matters: leftmost prefix rule
+CREATE INDEX idx_users_search ON users (
+    is_active,          -- equality filter first
+    subscription_tier,  -- equality filter second
+    last_login_at DESC  -- range/sort last
+);
+
+-- This query uses the full index
+SELECT * FROM users
+WHERE is_active = true
+  AND subscription_tier = 'premium'
+ORDER BY last_login_at DESC
+LIMIT 50;
+
+-- Expression index for computed lookups
+CREATE INDEX idx_users_email_lower ON users (LOWER(email));
+SELECT * FROM users WHERE LOWER(email) = 'user@example.com';
+
+-- GIN index for JSONB containment queries
+CREATE INDEX idx_events_metadata ON events USING GIN (metadata jsonb_path_ops);
+SELECT * FROM events WHERE metadata @> '{"type": "purchase", "source": "mobile"}';
+
+-- Concurrent index creation (no table lock)
+CREATE INDEX CONCURRENTLY idx_large_table_col ON large_table (column_name);
+
+-- Identify unused indexes for cleanup
+SELECT
+    schemaname || '.' || relname AS table,
+    indexrelname AS index,
+    idx_scan AS times_used,
+    pg_size_pretty(pg_relation_size(indexrelid)) AS index_size
+FROM pg_stat_user_indexes
+WHERE idx_scan < 50
+ORDER BY pg_relation_size(indexrelid) DESC
+LIMIT 20;
+
+-- Identify slow queries needing indexes
+SELECT
+    query,
+    calls,
+    ROUND(mean_exec_time::numeric, 2) AS avg_ms,
+    ROUND(total_exec_time::numeric, 2) AS total_ms,
+    rows
+FROM pg_stat_statements
+WHERE mean_exec_time > 100
+ORDER BY total_exec_time DESC
+LIMIT 20;`,
+};
+
+## Overview
+
+Index strategies that dramatically improve query performance: covering indexes for index-only scans, partial indexes for filtered subsets, composite indexes following the leftmost prefix rule, and expression indexes for computed lookups.
+
+## Code
+
+```sql
+-- Covering index (includes all needed columns)
+CREATE INDEX idx_orders ON orders (customer_id, date DESC) INCLUDE (amount);
+
+-- Partial index (smaller, faster for common queries)
+CREATE INDEX idx_active ON users (email) WHERE is_active = true;
+```
+
+## Notes
+
+- Composite index column order: equality columns first, then range/sort columns
+- `INCLUDE` columns are stored in the index but not used for lookup (avoids table access)
+- Partial indexes are much smaller and faster when you frequently query a subset
+- `CONCURRENTLY` prevents table locks during index creation (essential for production)
+- Monitor `pg_stat_user_indexes` to identify and remove unused indexes (they slow writes)
+- The leftmost prefix rule means (A, B, C) index serves queries on (A), (A, B), and (A, B, C)

@@ -1,0 +1,71 @@
+---
+title: "Service Health Dashboard"
+description: "SPL queries for monitoring service health including uptime, error rates, response times, and availability SLI calculations."
+category: "Splunk"
+language: "spl"
+tags: ["splunk", "monitoring", "dashboard", "sli", "production-ready"]
+createdAt: "2025-01-25"
+updatedAt: "2025-02-15"
+---
+
+export const codeBlocks = {
+  main: `| Service availability SLI over time
+index=application sourcetype=access_combined
+| eval is_success=if(status<500, 1, 0)
+| timechart span=1h
+    count as total_requests,
+    sum(is_success) as successful_requests
+| eval availability_pct=round((successful_requests/total_requests)*100, 3)
+| eval slo_target=99.9
+| eval slo_breach=if(availability_pct < slo_target, 1, 0)
+
+| Service health summary by endpoint
+index=application sourcetype=access_combined
+| stats
+    count as requests,
+    avg(response_time) as avg_latency_ms,
+    perc95(response_time) as p95_latency_ms,
+    perc99(response_time) as p99_latency_ms,
+    sum(eval(if(status>=500, 1, 0))) as errors,
+    sum(eval(if(status>=200 AND status<300, 1, 0))) as successes
+    by uri_path
+| eval error_rate=round((errors/requests)*100, 2)
+| eval health=case(
+    error_rate > 10, "critical",
+    error_rate > 5, "degraded",
+    error_rate > 1, "warning",
+    1=1, "healthy"
+)
+| sort - requests
+| head 20
+
+| Error budget consumption
+index=application sourcetype=access_combined earliest=-30d
+| eval is_error=if(status>=500, 1, 0)
+| stats count as total, sum(is_error) as errors by _time
+| streamstats sum(total) as cumulative_total, sum(errors) as cumulative_errors
+| eval slo=99.9
+| eval error_budget_total=cumulative_total * (1 - slo/100)
+| eval budget_consumed_pct=round((cumulative_errors/error_budget_total)*100, 1)
+| eval budget_remaining_pct=100 - budget_consumed_pct`,
+};
+
+## Overview
+
+SPL queries for building a service health dashboard that tracks availability SLIs, error budgets, and latency percentiles. These queries power real-time dashboards that show at a glance whether services are meeting their SLOs.
+
+## Code
+
+```spl
+index=application sourcetype=access_combined
+| eval is_success=if(status<500, 1, 0)
+| timechart span=1h sum(is_success)/count as availability_pct
+```
+
+## Notes
+
+- Availability SLI counts any non-5xx response as successful (4xx are client errors, not service failures)
+- Error budget shows how much of your allowed downtime has been consumed in the SLO window
+- Use `perc95` and `perc99` for latency SLIs rather than averages (which hide tail latency)
+- The `health` field enables color-coding in dashboards via conditional formatting
+- Set up alerts when `budget_consumed_pct` exceeds 80% to prevent SLO violations

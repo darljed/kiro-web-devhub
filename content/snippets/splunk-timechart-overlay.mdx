@@ -1,0 +1,70 @@
+---
+title: "Timechart Overlay Analysis"
+description: "SPL patterns for overlaying multiple metrics on time-series charts with week-over-week comparison and trend lines."
+category: "Splunk"
+language: "spl"
+tags: ["splunk", "timechart", "visualization", "trends", "production-ready"]
+createdAt: "2025-03-15"
+updatedAt: "2025-04-01"
+---
+
+export const codeBlocks = {
+  main: `| Multi-metric overlay: requests, errors, and latency on one chart
+index=application sourcetype=access_combined
+| timechart span=5m
+    count as requests,
+    sum(eval(if(status>=500, 1, 0))) as errors,
+    avg(response_time) as avg_latency_ms,
+    perc95(response_time) as p95_latency_ms
+| eval error_rate_pct=round((errors/requests)*100, 2)
+
+| Week-over-week comparison overlay
+index=application sourcetype=access_combined earliest=-7d
+| eval day_of_week=strftime(_time, "%A")
+| eval hour_of_day=strftime(_time, "%H:%M")
+| eval week=if(_time > relative_time(now(), "-7d@d"), "this_week", "last_week")
+| timechart span=1h count by week
+| eval change_pct=if(last_week>0, round(((this_week-last_week)/last_week)*100, 1), 0)
+
+| Deployment markers overlaid on error timeline
+index=application sourcetype=access_combined status>=500
+| timechart span=5m count as errors
+| appendcols [
+    search index=deployments sourcetype=deploy_events
+    | eval deploy_marker=service . " v" . version
+    | timechart span=5m values(deploy_marker) as deployments
+]
+| eval has_deploy=if(isnotnull(deployments), 1, 0)
+
+| Cumulative error budget burn with forecast
+index=application sourcetype=access_combined earliest=-30d
+| timechart span=1h
+    count as total,
+    sum(eval(if(status>=500, 1, 0))) as errors
+| streamstats sum(total) as cumul_total, sum(errors) as cumul_errors
+| eval slo=99.9
+| eval budget_total=cumul_total * (1 - slo/100)
+| eval budget_used_pct=round((cumul_errors/budget_total)*100, 1)
+| eval days_elapsed=round((_time - relative_time(now(), "-30d")) / 86400, 0)
+| eval projected_budget_used=round(budget_used_pct * (30 / days_elapsed), 1)
+| eval forecast_breach=if(projected_budget_used > 100, "WILL_BREACH", "ON_TRACK")`,
+};
+
+## Overview
+
+Time-series visualization patterns that overlay multiple metrics, compare periods, and annotate with deployment events. These enable at-a-glance correlation between changes and their impact on system health.
+
+## Code
+
+```spl
+| timechart span=5m count as requests, avg(response_time) as latency
+| eval error_rate=round((errors/requests)*100, 2)
+```
+
+## Notes
+
+- Span resolution should match your monitoring granularity (5m for alerts, 1h for trends)
+- Week-over-week overlays reveal seasonal patterns that absolute thresholds miss
+- Deploy markers on error charts immediately show deployment-correlated regressions
+- Error budget burn rate forecasting predicts SLO violations before they happen
+- Use `streamstats` for cumulative/running calculations without collapsing time

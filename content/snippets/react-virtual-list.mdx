@@ -1,0 +1,215 @@
+---
+title: "Virtualized List Component"
+description: "A lightweight virtual scrolling implementation for rendering large lists efficiently by only mounting visible items in the DOM."
+category: "React"
+language: "typescript"
+tags: ["react", "performance", "virtualization", "lists", "production-ready"]
+createdAt: "2025-03-18"
+updatedAt: "2025-04-05"
+---
+
+export const codeBlocks = {
+  main: `import { useState, useRef, useEffect, useCallback, ReactNode } from "react";
+
+interface VirtualListProps<T> {
+  items: T[];
+  itemHeight: number;
+  containerHeight: number;
+  overscan?: number;
+  renderItem: (item: T, index: number) => ReactNode;
+  getKey?: (item: T, index: number) => string | number;
+  className?: string;
+}
+
+export function VirtualList<T>({
+  items,
+  itemHeight,
+  containerHeight,
+  overscan = 5,
+  renderItem,
+  getKey,
+  className,
+}: VirtualListProps<T>) {
+  const [scrollTop, setScrollTop] = useState(0);
+  const containerRef = useRef<HTMLDivElement>(null);
+
+  const totalHeight = items.length * itemHeight;
+  const startIndex = Math.max(0, Math.floor(scrollTop / itemHeight) - overscan);
+  const endIndex = Math.min(
+    items.length,
+    Math.ceil((scrollTop + containerHeight) / itemHeight) + overscan
+  );
+
+  const visibleItems = items.slice(startIndex, endIndex);
+  const offsetY = startIndex * itemHeight;
+
+  const handleScroll = useCallback((e: React.UIEvent<HTMLDivElement>) => {
+    setScrollTop(e.currentTarget.scrollTop);
+  }, []);
+
+  return (
+    <div
+      ref={containerRef}
+      onScroll={handleScroll}
+      className={className}
+      style={{
+        height: containerHeight,
+        overflow: "auto",
+        position: "relative",
+      }}
+    >
+      <div style={{ height: totalHeight, position: "relative" }}>
+        <div
+          style={{
+            position: "absolute",
+            top: offsetY,
+            left: 0,
+            right: 0,
+          }}
+        >
+          {visibleItems.map((item, i) => {
+            const actualIndex = startIndex + i;
+            const key = getKey ? getKey(item, actualIndex) : actualIndex;
+            return (
+              <div key={key} style={{ height: itemHeight }}>
+                {renderItem(item, actualIndex)}
+              </div>
+            );
+          })}
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// Variable height variant using resize observer
+interface VariableVirtualListProps<T> {
+  items: T[];
+  estimatedItemHeight: number;
+  containerHeight: number;
+  overscan?: number;
+  renderItem: (item: T, index: number, measureRef: (el: HTMLElement | null) => void) => ReactNode;
+}
+
+export function VariableVirtualList<T>({
+  items,
+  estimatedItemHeight,
+  containerHeight,
+  overscan = 3,
+  renderItem,
+}: VariableVirtualListProps<T>) {
+  const [scrollTop, setScrollTop] = useState(0);
+  const measuredHeights = useRef<Map<number, number>>(new Map());
+
+  const getItemOffset = (index: number): number => {
+    let offset = 0;
+    for (let i = 0; i < index; i++) {
+      offset += measuredHeights.current.get(i) ?? estimatedItemHeight;
+    }
+    return offset;
+  };
+
+  const getTotalHeight = (): number => getItemOffset(items.length);
+
+  const getVisibleRange = (): [number, number] => {
+    let start = 0;
+    let offset = 0;
+    while (start < items.length && offset < scrollTop) {
+      offset += measuredHeights.current.get(start) ?? estimatedItemHeight;
+      start++;
+    }
+    start = Math.max(0, start - 1 - overscan);
+
+    let end = start;
+    offset = getItemOffset(start);
+    while (end < items.length && offset < scrollTop + containerHeight) {
+      offset += measuredHeights.current.get(end) ?? estimatedItemHeight;
+      end++;
+    }
+    end = Math.min(items.length, end + overscan);
+    return [start, end];
+  };
+
+  const [startIndex, endIndex] = getVisibleRange();
+
+  const measureRef = (index: number) => (el: HTMLElement | null) => {
+    if (el) {
+      const height = el.getBoundingClientRect().height;
+      if (measuredHeights.current.get(index) !== height) {
+        measuredHeights.current.set(index, height);
+      }
+    }
+  };
+
+  return (
+    <div
+      onScroll={(e) => setScrollTop(e.currentTarget.scrollTop)}
+      style={{ height: containerHeight, overflow: "auto", position: "relative" }}
+    >
+      <div style={{ height: getTotalHeight(), position: "relative" }}>
+        {items.slice(startIndex, endIndex).map((item, i) => {
+          const actualIndex = startIndex + i;
+          return (
+            <div
+              key={actualIndex}
+              style={{ position: "absolute", top: getItemOffset(actualIndex), left: 0, right: 0 }}
+            >
+              {renderItem(item, actualIndex, measureRef(actualIndex))}
+            </div>
+          );
+        })}
+      </div>
+    </div>
+  );
+}`,
+  usage: `// Fixed height items (fastest)
+<VirtualList
+  items={users}
+  itemHeight={64}
+  containerHeight={600}
+  overscan={5}
+  getKey={(user) => user.id}
+  renderItem={(user, index) => (
+    <div className="flex items-center p-4 border-b">
+      <img src={user.avatar} className="w-8 h-8 rounded-full mr-3" />
+      <span>{user.name}</span>
+    </div>
+  )}
+/>
+
+// Variable height items
+<VariableVirtualList
+  items={messages}
+  estimatedItemHeight={80}
+  containerHeight={500}
+  renderItem={(message, index, measureRef) => (
+    <div ref={measureRef} className="p-3 border-b">
+      <p className="font-medium">{message.author}</p>
+      <p>{message.content}</p>
+    </div>
+  )}
+/>`,
+};
+
+## Overview
+
+Virtual scrolling renders only the items currently visible in the viewport, enabling smooth scrolling through lists of thousands or millions of items. The fixed-height variant is simplest and fastest; the variable-height variant measures items dynamically.
+
+## Code
+
+```tsx
+<VirtualList
+  items={data}
+  itemHeight={48}
+  containerHeight={400}
+  renderItem={(item) => <Row data={item} />}
+/>
+```
+
+## Notes
+
+- The `overscan` parameter renders extra items above/below viewport to prevent flicker during fast scrolling
+- Fixed-height is O(1) for offset calculations; variable-height is O(n) in worst case
+- Use `getKey` for stable React keys when items can be reordered
+- For production use with variable heights, consider react-window or @tanstack/virtual
+- Pair with infinite scroll (intersection observer at the bottom) for paginated data

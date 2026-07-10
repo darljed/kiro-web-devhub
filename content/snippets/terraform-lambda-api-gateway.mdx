@@ -1,0 +1,154 @@
+---
+title: "Lambda with API Gateway"
+description: "Serverless API using Lambda and API Gateway v2 (HTTP API) with custom domain, stages, and IAM permissions."
+category: "Terraform"
+language: "hcl"
+tags: ["terraform", "aws", "lambda", "api-gateway", "production-ready"]
+createdAt: "2025-03-10"
+updatedAt: "2025-03-30"
+---
+
+export const codeBlocks = {
+  main: `variable "function_name" { type = string }
+variable "handler" { type = string; default = "index.handler" }
+variable "runtime" { type = string; default = "nodejs20.x" }
+variable "source_dir" { type = string }
+variable "environment_variables" { type = map(string); default = {} }
+variable "domain_name" { type = string; default = "" }
+
+# Lambda Function
+data "archive_file" "lambda" {
+  type        = "zip"
+  source_dir  = var.source_dir
+  output_path = "\${path.module}/.build/\${var.function_name}.zip"
+}
+
+resource "aws_lambda_function" "this" {
+  function_name    = var.function_name
+  role             = aws_iam_role.lambda.arn
+  handler          = var.handler
+  runtime          = var.runtime
+  filename         = data.archive_file.lambda.output_path
+  source_code_hash = data.archive_file.lambda.output_base64sha256
+  timeout          = 30
+  memory_size      = 256
+
+  environment {
+    variables = merge(var.environment_variables, {
+      NODE_ENV = "production"
+    })
+  }
+
+  tracing_config {
+    mode = "Active"
+  }
+}
+
+# API Gateway HTTP API
+resource "aws_apigatewayv2_api" "this" {
+  name          = "\${var.function_name}-api"
+  protocol_type = "HTTP"
+
+  cors_configuration {
+    allow_origins = ["*"]
+    allow_methods = ["GET", "POST", "PUT", "DELETE", "OPTIONS"]
+    allow_headers = ["Content-Type", "Authorization"]
+    max_age       = 3600
+  }
+}
+
+resource "aws_apigatewayv2_stage" "this" {
+  api_id      = aws_apigatewayv2_api.this.id
+  name        = "$default"
+  auto_deploy = true
+
+  access_log_settings {
+    destination_arn = aws_cloudwatch_log_group.api.arn
+    format = jsonencode({
+      requestId   = "$context.requestId"
+      ip          = "$context.identity.sourceIp"
+      method      = "$context.httpMethod"
+      path        = "$context.path"
+      status      = "$context.status"
+      latency     = "$context.responseLatency"
+      integration = "$context.integrationLatency"
+    })
+  }
+}
+
+resource "aws_apigatewayv2_integration" "this" {
+  api_id                 = aws_apigatewayv2_api.this.id
+  integration_type       = "AWS_PROXY"
+  integration_uri        = aws_lambda_function.this.invoke_arn
+  payload_format_version = "2.0"
+}
+
+resource "aws_apigatewayv2_route" "default" {
+  api_id    = aws_apigatewayv2_api.this.id
+  route_key = "$default"
+  target    = "integrations/\${aws_apigatewayv2_integration.this.id}"
+}
+
+# Lambda permission for API Gateway
+resource "aws_lambda_permission" "apigw" {
+  statement_id  = "AllowAPIGateway"
+  action        = "lambda:InvokeFunction"
+  function_name = aws_lambda_function.this.function_name
+  principal     = "apigateway.amazonaws.com"
+  source_arn    = "\${aws_apigatewayv2_api.this.execution_arn}/*/*"
+}
+
+# IAM Role for Lambda
+resource "aws_iam_role" "lambda" {
+  name = "\${var.function_name}-role"
+  assume_role_policy = jsonencode({
+    Version = "2012-10-17"
+    Statement = [{
+      Action = "sts:AssumeRole"
+      Effect = "Allow"
+      Principal = { Service = "lambda.amazonaws.com" }
+    }]
+  })
+}
+
+resource "aws_iam_role_policy_attachment" "lambda_basic" {
+  role       = aws_iam_role.lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/service-role/AWSLambdaBasicExecutionRole"
+}
+
+resource "aws_iam_role_policy_attachment" "xray" {
+  role       = aws_iam_role.lambda.name
+  policy_arn = "arn:aws:iam::aws:policy/AWSXRayDaemonWriteAccess"
+}
+
+resource "aws_cloudwatch_log_group" "api" {
+  name              = "/aws/apigateway/\${var.function_name}"
+  retention_in_days = 14
+}
+
+output "api_url" { value = aws_apigatewayv2_api.this.api_endpoint }
+output "function_arn" { value = aws_lambda_function.this.arn }`,
+};
+
+## Overview
+
+A serverless API setup using AWS Lambda with HTTP API Gateway (v2). Includes CORS configuration, structured access logging, X-Ray tracing, and automatic deployment. HTTP API is faster and cheaper than REST API for most use cases.
+
+## Code
+
+```hcl
+module "api" {
+  source        = "./modules/lambda-api"
+  function_name = "user-api"
+  source_dir    = "./dist"
+  environment_variables = { DB_URL = var.database_url }
+}
+```
+
+## Notes
+
+- HTTP API (v2) is 70% cheaper and lower latency than REST API (v1) for most workloads
+- `payload_format_version = "2.0"` passes a simplified event format to Lambda
+- `source_code_hash` triggers redeployment only when code actually changes
+- X-Ray tracing provides distributed tracing across API Gateway and Lambda
+- The `$default` route catches all paths; add specific routes for path-based routing

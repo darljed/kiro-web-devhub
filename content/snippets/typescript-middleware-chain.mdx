@@ -1,0 +1,137 @@
+---
+title: "Composable Middleware Chain"
+description: "A type-safe middleware pipeline pattern for processing requests through ordered handlers with early termination and context passing."
+category: "TypeScript"
+language: "typescript"
+tags: ["typescript", "middleware", "pipeline", "design-patterns", "production-ready"]
+createdAt: "2025-03-10"
+updatedAt: "2025-03-30"
+---
+
+export const codeBlocks = {
+  main: `interface Context {
+  request: Request;
+  response: ResponseInit & { body?: unknown };
+  state: Map<string, unknown>;
+  startTime: number;
+}
+
+type NextFunction = () => Promise<void>;
+type Middleware = (ctx: Context, next: NextFunction) => Promise<void>;
+
+export class MiddlewareChain {
+  private middlewares: Middleware[] = [];
+
+  use(middleware: Middleware): this {
+    this.middlewares.push(middleware);
+    return this;
+  }
+
+  async execute(request: Request): Promise<Response> {
+    const ctx: Context = {
+      request,
+      response: { status: 200, headers: {} },
+      state: new Map(),
+      startTime: Date.now(),
+    };
+
+    let index = 0;
+    const next: NextFunction = async () => {
+      if (index < this.middlewares.length) {
+        const middleware = this.middlewares[index++];
+        await middleware(ctx, next);
+      }
+    };
+
+    try {
+      await next();
+    } catch (error) {
+      ctx.response.status = 500;
+      ctx.response.body = {
+        error: error instanceof Error ? error.message : "Internal Server Error",
+      };
+    }
+
+    return new Response(
+      ctx.response.body ? JSON.stringify(ctx.response.body) : null,
+      { status: ctx.response.status, headers: ctx.response.headers as HeadersInit }
+    );
+  }
+}
+
+// Built-in middlewares
+export const logging: Middleware = async (ctx, next) => {
+  const method = ctx.request.method;
+  const url = new URL(ctx.request.url).pathname;
+  console.log(\`--> \${method} \${url}\`);
+  await next();
+  const duration = Date.now() - ctx.startTime;
+  console.log(\`<-- \${method} \${url} \${ctx.response.status} \${duration}ms\`);
+};
+
+export const cors = (origins: string[]): Middleware => async (ctx, next) => {
+  const origin = ctx.request.headers.get("origin") ?? "";
+  if (origins.includes(origin) || origins.includes("*")) {
+    (ctx.response.headers as Record<string, string>)["Access-Control-Allow-Origin"] = origin;
+    (ctx.response.headers as Record<string, string>)["Access-Control-Allow-Methods"] = "GET,POST,PUT,DELETE";
+    (ctx.response.headers as Record<string, string>)["Access-Control-Allow-Headers"] = "Content-Type,Authorization";
+  }
+  if (ctx.request.method === "OPTIONS") {
+    ctx.response.status = 204;
+    return; // Don't call next - early termination
+  }
+  await next();
+};
+
+export const auth = (verifyToken: (token: string) => Promise<{ userId: string } | null>): Middleware =>
+  async (ctx, next) => {
+    const header = ctx.request.headers.get("authorization");
+    if (!header?.startsWith("Bearer ")) {
+      ctx.response.status = 401;
+      ctx.response.body = { error: "Missing authorization header" };
+      return;
+    }
+    const user = await verifyToken(header.slice(7));
+    if (!user) {
+      ctx.response.status = 401;
+      ctx.response.body = { error: "Invalid token" };
+      return;
+    }
+    ctx.state.set("userId", user.userId);
+    await next();
+  };`,
+  usage: `const app = new MiddlewareChain();
+
+app
+  .use(logging)
+  .use(cors(["https://myapp.com"]))
+  .use(auth(verifyJWT))
+  .use(async (ctx, next) => {
+    const userId = ctx.state.get("userId") as string;
+    ctx.response.body = { message: \`Hello, \${userId}\` };
+    ctx.response.status = 200;
+  });
+
+// Handle a request
+const response = await app.execute(new Request("https://api.example.com/me"));`,
+};
+
+## Overview
+
+An onion-model middleware chain where each middleware can perform work before and after calling `next()`. This pattern enables cross-cutting concerns like logging, authentication, and CORS to be composed independently without coupling to specific route handlers.
+
+## Code
+
+```typescript
+const app = new MiddlewareChain();
+app.use(logging).use(cors(["*"])).use(auth(verify)).use(handler);
+const response = await app.execute(request);
+```
+
+## Notes
+
+- Each middleware controls flow by calling or skipping `next()` (early termination for auth failures, OPTIONS)
+- The `state` Map passes data between middlewares without type coupling
+- Error boundaries are automatic since the chain catches exceptions from any middleware
+- Middleware execution follows the "onion" model: pre-processing wraps post-processing
+- This pattern is used by Koa, Hono, and other modern Node.js frameworks

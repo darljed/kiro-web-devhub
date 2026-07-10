@@ -1,0 +1,187 @@
+---
+title: "Clone-on-Write Optimization"
+description: "Using Cow (Clone on Write) for zero-copy string processing and efficient data transformation when cloning may be unnecessary."
+category: "Rust"
+language: "rust"
+tags: ["rust", "performance", "cow", "zero-copy", "production-ready"]
+createdAt: "2025-04-01"
+updatedAt: "2025-04-15"
+---
+
+export const codeBlocks = {
+  main: `use std::borrow::Cow;
+use std::collections::HashMap;
+
+/// Normalize a URL path - only allocates if modification is needed
+pub fn normalize_path(path: &str) -> Cow<'_, str> {
+    // Fast path: already normalized
+    if !path.contains("//")
+        && !path.ends_with('/')
+        && !path.contains("/../")
+        && !path.contains("/./")
+    {
+        return Cow::Borrowed(path);
+    }
+
+    // Slow path: needs modification - allocate only here
+    let mut normalized = String::with_capacity(path.len());
+    let mut prev_slash = false;
+
+    for ch in path.chars() {
+        if ch == '/' {
+            if !prev_slash {
+                normalized.push(ch);
+            }
+            prev_slash = true;
+        } else {
+            normalized.push(ch);
+            prev_slash = false;
+        }
+    }
+
+    // Remove trailing slash (except for root)
+    if normalized.len() > 1 && normalized.ends_with('/') {
+        normalized.pop();
+    }
+
+    Cow::Owned(normalized)
+}
+
+/// Template engine that avoids allocation when no variables are present
+pub fn render_template<'a>(
+    template: &'a str,
+    variables: &HashMap<&str, &str>,
+) -> Cow<'a, str> {
+    if !template.contains("{{") {
+        return Cow::Borrowed(template);
+    }
+
+    let mut result = String::with_capacity(template.len());
+    let mut chars = template.chars().peekable();
+
+    while let Some(ch) = chars.next() {
+        if ch == '{' && chars.peek() == Some(&'{') {
+            chars.next(); // consume second {
+            let mut var_name = String::new();
+            while let Some(&c) = chars.peek() {
+                if c == '}' {
+                    chars.next();
+                    if chars.peek() == Some(&'}') {
+                        chars.next();
+                    }
+                    break;
+                }
+                var_name.push(c);
+                chars.next();
+            }
+            let var_name = var_name.trim();
+            if let Some(value) = variables.get(var_name) {
+                result.push_str(value);
+            } else {
+                result.push_str("{{");
+                result.push_str(var_name);
+                result.push_str("}}");
+            }
+        } else {
+            result.push(ch);
+        }
+    }
+
+    Cow::Owned(result)
+}
+
+/// Config value that may be owned or borrowed from environment
+#[derive(Debug, Clone)]
+pub struct Config<'a> {
+    pub host: Cow<'a, str>,
+    pub port: u16,
+    pub database_url: Cow<'a, str>,
+    pub log_level: Cow<'a, str>,
+}
+
+impl<'a> Config<'a> {
+    /// Create config from defaults (zero allocation)
+    pub fn defaults() -> Config<'static> {
+        Config {
+            host: Cow::Borrowed("localhost"),
+            port: 8080,
+            database_url: Cow::Borrowed("postgres://localhost/app"),
+            log_level: Cow::Borrowed("info"),
+        }
+    }
+
+    /// Override with environment variables (allocates only for overrides)
+    pub fn from_env() -> Config<'static> {
+        Config {
+            host: match std::env::var("HOST") {
+                Ok(h) => Cow::Owned(h),
+                Err(_) => Cow::Borrowed("localhost"),
+            },
+            port: std::env::var("PORT")
+                .ok()
+                .and_then(|p| p.parse().ok())
+                .unwrap_or(8080),
+            database_url: match std::env::var("DATABASE_URL") {
+                Ok(url) => Cow::Owned(url),
+                Err(_) => Cow::Borrowed("postgres://localhost/app"),
+            },
+            log_level: match std::env::var("LOG_LEVEL") {
+                Ok(level) => Cow::Owned(level),
+                Err(_) => Cow::Borrowed("info"),
+            },
+        }
+    }
+
+    /// Convert to fully owned (for sending across threads)
+    pub fn into_owned(self) -> Config<'static> {
+        Config {
+            host: Cow::Owned(self.host.into_owned()),
+            port: self.port,
+            database_url: Cow::Owned(self.database_url.into_owned()),
+            log_level: Cow::Owned(self.log_level.into_owned()),
+        }
+    }
+}`,
+  usage: `// normalize_path - no allocation needed for clean paths
+let clean = normalize_path("/api/users"); // Cow::Borrowed (zero-copy)
+let fixed = normalize_path("/api//users/"); // Cow::Owned (allocated)
+
+// Both can be used as &str transparently
+println!("Path: {}", clean);
+println!("Path: {}", fixed);
+
+// Template rendering - no allocation if no variables
+let plain = render_template("Hello, World!", &HashMap::new()); // Borrowed
+let rendered = render_template(
+    "Hello, {{name}}!",
+    &HashMap::from([("name", "Alice")]),
+); // Owned
+
+// Config - defaults are zero-cost, overrides allocate only what's needed
+let config = Config::from_env();
+println!("Connecting to: {}", config.database_url);`,
+};
+
+## Overview
+
+`Cow` (Clone on Write) enables functions to return either a borrowed reference or an owned value, avoiding allocation in the common case where no modification is needed. This is particularly effective for string processing where most inputs require no changes.
+
+## Code
+
+```rust
+pub fn process(input: &str) -> Cow<'_, str> {
+    if needs_modification(input) {
+        Cow::Owned(modify(input))  // Allocates only when needed
+    } else {
+        Cow::Borrowed(input)  // Zero-cost: just a reference
+    }
+}
+```
+
+## Notes
+
+- `Cow::Borrowed` is a thin wrapper around a reference (no heap allocation)
+- `Cow::Owned` holds an owned value (allocated on heap)
+- Both variants implement `Deref` to the inner type, so they can be used as `&str` transparently
+- This pattern shines in parsers, validators, and normalizers where most inputs pass through unchanged
+- `into_owned()` converts to the owned variant (cloning if borrowed) when ownership is required

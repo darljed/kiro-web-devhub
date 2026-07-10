@@ -1,0 +1,168 @@
+---
+title: "Async Gather with Error Handling"
+description: "Patterns for running concurrent async tasks with proper error collection, timeouts, semaphore-based rate limiting, and partial results."
+category: "Python"
+language: "python"
+tags: ["python", "async", "concurrency", "error-handling", "production-ready"]
+createdAt: "2025-01-25"
+updatedAt: "2025-02-15"
+---
+
+export const codeBlocks = {
+  main: `import asyncio
+from dataclasses import dataclass, field
+from typing import TypeVar, Callable, Awaitable, Any
+
+T = TypeVar("T")
+
+
+@dataclass
+class TaskResult(Generic[T]):
+    """Result of an individual async task."""
+    index: int
+    success: bool
+    value: T | None = None
+    error: Exception | None = None
+    duration_ms: float = 0.0
+
+
+@dataclass
+class BatchResult(Generic[T]):
+    """Aggregated results from a batch of async tasks."""
+    results: list[TaskResult[T]] = field(default_factory=list)
+    total: int = 0
+    succeeded: int = 0
+    failed: int = 0
+    total_duration_ms: float = 0.0
+
+    @property
+    def values(self) -> list[T]:
+        return [r.value for r in self.results if r.success and r.value is not None]
+
+    @property
+    def errors(self) -> list[tuple[int, Exception]]:
+        return [(r.index, r.error) for r in self.results if not r.success and r.error]
+
+
+from typing import Generic
+
+
+async def gather_with_errors(
+    tasks: list[Callable[[], Awaitable[T]]],
+    *,
+    max_concurrency: int | None = None,
+    timeout: float | None = None,
+    return_exceptions: bool = True,
+) -> BatchResult[T]:
+    """Run async tasks concurrently with error handling and optional rate limiting."""
+    import time
+
+    batch_start = time.perf_counter()
+    semaphore = asyncio.Semaphore(max_concurrency) if max_concurrency else None
+    results: list[TaskResult[T]] = [None] * len(tasks)  # type: ignore
+
+    async def run_task(index: int, task_fn: Callable[[], Awaitable[T]]) -> None:
+        task_start = time.perf_counter()
+        try:
+            if semaphore:
+                async with semaphore:
+                    value = await asyncio.wait_for(task_fn(), timeout=timeout)
+            else:
+                value = await asyncio.wait_for(task_fn(), timeout=timeout) if timeout else await task_fn()
+
+            duration = (time.perf_counter() - task_start) * 1000
+            results[index] = TaskResult(
+                index=index, success=True, value=value, duration_ms=duration
+            )
+        except asyncio.TimeoutError:
+            duration = (time.perf_counter() - task_start) * 1000
+            results[index] = TaskResult(
+                index=index, success=False,
+                error=TimeoutError(f"Task {index} timed out after {timeout}s"),
+                duration_ms=duration,
+            )
+        except Exception as exc:
+            duration = (time.perf_counter() - task_start) * 1000
+            results[index] = TaskResult(
+                index=index, success=False, error=exc, duration_ms=duration
+            )
+            if not return_exceptions:
+                raise
+
+    # Run all tasks concurrently
+    coros = [run_task(i, task) for i, task in enumerate(tasks)]
+    await asyncio.gather(*coros, return_exceptions=return_exceptions)
+
+    total_duration = (time.perf_counter() - batch_start) * 1000
+    succeeded = sum(1 for r in results if r and r.success)
+
+    return BatchResult(
+        results=[r for r in results if r],
+        total=len(tasks),
+        succeeded=succeeded,
+        failed=len(tasks) - succeeded,
+        total_duration_ms=total_duration,
+    )
+
+
+# Retry wrapper for individual tasks
+async def with_retry(
+    fn: Callable[[], Awaitable[T]],
+    max_retries: int = 3,
+    base_delay: float = 1.0,
+) -> T:
+    """Wrap an async function with exponential backoff retry."""
+    last_error: Exception | None = None
+    for attempt in range(max_retries):
+        try:
+            return await fn()
+        except Exception as exc:
+            last_error = exc
+            if attempt < max_retries - 1:
+                delay = base_delay * (2 ** attempt)
+                await asyncio.sleep(delay)
+    raise last_error  # type: ignore`,
+  usage: `import httpx
+
+async def fetch_user(user_id: str) -> dict:
+    async with httpx.AsyncClient() as client:
+        resp = await client.get(f"https://api.example.com/users/{user_id}")
+        resp.raise_for_status()
+        return resp.json()
+
+# Fetch 100 users with max 10 concurrent requests and 5s timeout
+user_ids = [f"user_{i}" for i in range(100)]
+result = await gather_with_errors(
+    [lambda uid=uid: fetch_user(uid) for uid in user_ids],
+    max_concurrency=10,
+    timeout=5.0,
+)
+
+print(f"Success: {result.succeeded}/{result.total}")
+print(f"Duration: {result.total_duration_ms:.0f}ms")
+for index, error in result.errors:
+    print(f"  Task {index} failed: {error}")`,
+};
+
+## Overview
+
+A structured concurrency utility for running batches of async tasks with bounded parallelism, individual timeouts, and comprehensive error collection. Unlike raw `asyncio.gather()`, it preserves order, collects partial results, and prevents one failure from losing all results.
+
+## Code
+
+```python
+result = await gather_with_errors(
+    tasks,
+    max_concurrency=10,
+    timeout=5.0,
+)
+print(f"Got {result.succeeded}/{result.total} results")
+```
+
+## Notes
+
+- `max_concurrency` uses a semaphore to prevent overwhelming downstream services
+- Individual task timeouts prevent one slow task from blocking the entire batch
+- Results preserve original order via index tracking regardless of completion order
+- The `with_retry` wrapper can be composed with `gather_with_errors` for resilient batch operations
+- `return_exceptions=True` (default) prevents one failure from canceling other in-flight tasks
