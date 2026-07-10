@@ -2,7 +2,7 @@
   "id": "FEAT-001",
   "type": "chore",
   "description": "Install dependencies (next-themes, lucide-react), verify baseline build, and set up project foundation including data layer (lib/data.ts) and Tailwind v4 dark mode configuration.",
-  "status": "in_progress",
+  "status": "completed",
   "steps": [
     "Install next-themes and lucide-react via npm: `npm install next-themes lucide-react`",
     "Create lib/data.ts with a TypeScript interface for Snippet (id, title, description, category, code, language) and export an array of 4 mock snippets covering Splunk, React, AI/Python, and Bash categories",
@@ -20,5 +20,5 @@
     "npm run build"
   ],
   "blocked_reason": null,
-  "findings": ""
+  "findings": "next-themes@0.4.6 and lucide-react installed. Tailwind v4 class-based dark mode configured via @custom-variant directive. lib/data.ts created with 4 typed snippets. Build and lint pass cleanly."
 }
