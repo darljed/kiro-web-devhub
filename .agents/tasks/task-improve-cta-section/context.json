@@ -1,0 +1,21 @@
+{
+  "project_type": "Next.js 16 app with React 19, Tailwind CSS 4",
+  "language": "TypeScript/TSX",
+  "build_system": "next build via npm scripts",
+  "test_framework": "none detected",
+  "build_command": "npm run build",
+  "test_command": "npm run lint",
+  "verification_instructions": "Run npm run build to verify no TypeScript or build errors. Run npm run lint for linting.",
+  "snapshot_or_generated_files": null,
+  "setup_instructions": "npm install in the project root",
+  "environment_constraints": "Next.js 16 with breaking changes - check node_modules/next/dist/docs/ for API changes. Tailwind CSS 4 using @import 'tailwindcss' syntax. Custom animations need to be defined via Tailwind's @theme or inline styles.",
+  "contribution_requirements": "Use 'use client' directive for client components. Follow semantic HTML. Use responsive Tailwind CSS utility classes.",
+  "key_patterns": "Components use AnimateOnScroll wrapper for scroll-based entrance animations. Landing sections are in components/landing/. Color scheme uses purple/sky gradient accents on dark zinc backgrounds. lucide-react available for icons.",
+  "relevant_files": [
+    "components/landing/CTASection.tsx",
+    "components/AnimateOnScroll.tsx",
+    "components/landing/HeroSection.tsx",
+    "app/globals.css"
+  ],
+  "directory_structure": "app/ - Next.js app router pages and layout; components/ - shared components; components/landing/ - landing page sections; hooks/ - custom hooks; lib/ - utility functions; public/ - static assets"
+}
