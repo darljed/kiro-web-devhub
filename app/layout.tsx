@@ -16,9 +16,9 @@ const geistMono = Geist_Mono({
 });
 
 export const metadata: Metadata = {
-  title: "Darl Jed | Dev Hub",
+  title: "DevHub - Code Snippet Vault for Developers",
   description:
-    "Portfolio and snippet vault for Darl Jed Matundan, a Full-Stack Developer and Automation Engineer.",
+    "Organize, search, and share reusable code snippets across languages. A developer tool for teams and individuals who value clean, accessible code.",
 };
 
 export default function RootLayout({
